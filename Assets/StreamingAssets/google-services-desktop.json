@@ -1,0 +1,31 @@
+{
+  "project_info": {
+    "project_number": "950245179751",
+    "project_id": "run-bird-run-6b643",
+    "storage_bucket": "run-bird-run-6b643.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:950245179751:ios:fcde0b1dc3128a1e87efc2",
+        "android_client_info": {
+          "package_name": "com.tsvetanvalentin.runbirdrun"
+        }
+      },
+      "api_key": [
+        {
+          "current_key": "AIzaSyATcGr3iK54ZmJjcbkJJJfAtUY4vH4LPtk"
+        }
+      ],
+      "services": {
+        "analytics_service": {
+          "status": 0
+        },
+        "appinvite_service": {
+          "status": 1
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}

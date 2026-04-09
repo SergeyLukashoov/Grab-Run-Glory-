@@ -1,0 +1,309 @@
+name: unity-build-and-ios-upload
+
+on:
+  workflow_dispatch:
+    inputs:
+      build_type:
+        description: 'Select build type'
+        required: true
+        default: 'full'
+        type: choice
+        options:
+          - full
+
+jobs:
+  buildForAllSupportedPlatforms:
+    name: Build for ${{ matrix.targetPlatform }} on ${{ matrix.unity-version }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        unity-version:
+          - ${{ vars.UNITY_VERSION || '6000.2.11f1' }}
+        os:
+          - ubuntu-latest
+        targetPlatform:
+          - iOS
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          lfs: true
+
+      - name: Free Disk Space (Ubuntu)
+        uses: jlumbroso/free-disk-space@v1.3.1
+
+      - name: Cache Library folder
+        uses: actions/cache@v3
+        with:
+          path: Library
+          key: Library-${{ matrix.targetPlatform }}
+          restore-keys: Library-
+
+      - name: Build Unity project
+        uses: game-ci/unity-builder@v4.8.1
+        env:
+          UNITY_LICENSE: ${{ secrets.UNITY_LICENSE }}
+          UNITY_EMAIL: ${{ secrets.UNITY_EMAIL }}
+          UNITY_PASSWORD: ${{ secrets.UNITY_PASSWORD }}
+        with:
+          targetPlatform: ${{ matrix.targetPlatform }}
+
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: Build-${{ matrix.targetPlatform }}
+          path: build/${{ matrix.targetPlatform }}
+
+      - name: Generate Unity build size report
+        run: |
+          set -euo pipefail
+          mkdir -p reports
+          BUILD_DIR="build/${{ matrix.targetPlatform }}"
+          BYTES=$(python3 - <<'PY'
+          from pathlib import Path
+          root = Path("build/${{ matrix.targetPlatform }}")
+          total = 0
+          if root.exists():
+              for p in root.rglob("*"):
+                  if p.is_file():
+                      total += p.stat().st_size
+          print(total)
+          PY
+          )
+          MB=$(awk "BEGIN {printf \"%.2f\", $BYTES/1048576}")
+          {
+            echo "target_platform=${{ matrix.targetPlatform }}"
+            echo "unity_version=${{ matrix.unity-version }}"
+            echo "build_dir=$BUILD_DIR"
+            echo "size_bytes=$BYTES"
+            echo "size_mb=$MB"
+          } > reports/unity-size-${{ matrix.targetPlatform }}.txt
+
+      - name: Upload Unity size report
+        uses: actions/upload-artifact@v4
+        with:
+          name: unity-size-report-${{ matrix.targetPlatform }}
+          path: reports/unity-size-${{ matrix.targetPlatform }}.txt
+
+      - name: Upload iOS optimizer report
+        if: ${{ matrix.targetPlatform == 'iOS' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: ios-optimizer-report-${{ matrix.targetPlatform }}
+          path: BuildReports/ios-size-optimizer-report.txt
+          if-no-files-found: warn
+
+  xcodeBuildAndUpload:
+    name: Xcode Build and Upload to TestFlight
+    needs: buildForAllSupportedPlatforms
+    runs-on: macos-latest
+    env:
+      IOS_BUILD_PATH: ${{ format('{0}/build/iOS', github.workspace) }}
+    strategy:
+      fail-fast: false
+      matrix:
+        unity-version:
+          - ${{ vars.UNITY_VERSION || '6000.2.11f1' }}
+        targetPlatform:
+          - iOS
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Download iOS Artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: Build-${{ matrix.targetPlatform }}
+          path: build/${{ matrix.targetPlatform }}
+
+      - name: Generate downloaded artifact size report
+        run: |
+          set -euo pipefail
+          mkdir -p reports
+          BUILD_DIR="build/${{ matrix.targetPlatform }}"
+          BYTES=$(python3 - <<'PY'
+          from pathlib import Path
+          root = Path("build/${{ matrix.targetPlatform }}")
+          total = 0
+          if root.exists():
+              for p in root.rglob("*"):
+                  if p.is_file():
+                      total += p.stat().st_size
+          print(total)
+          PY
+          )
+          MB=$(awk "BEGIN {printf \"%.2f\", $BYTES/1048576}")
+          {
+            echo "target_platform=${{ matrix.targetPlatform }}"
+            echo "unity_version=${{ matrix.unity-version }}"
+            echo "build_dir=$BUILD_DIR"
+            echo "size_bytes=$BYTES"
+            echo "size_mb=$MB"
+          } > reports/downloaded-build-size-${{ matrix.targetPlatform }}.txt
+
+      - name: Ensure required iPad app icons exist
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json
+          import subprocess
+          from pathlib import Path
+
+          root = Path("build/iOS/iOS")
+          preferred_source = Path("Assets/Icons/Icon.png")
+          appicon_sets = [p.parent for p in root.rglob("*.appiconset/Contents.json")]
+          if not appicon_sets:
+              print("No appiconsets found, skipping icon patch.")
+              raise SystemExit(0)
+
+          print(f"Found {len(appicon_sets)} appiconset(s)")
+          patched = 0
+          for appicon_dir in appicon_sets:
+              contents_path = appicon_dir / "Contents.json"
+              data = json.loads(contents_path.read_text(encoding="utf-8"))
+              images = data.get("images", [])
+
+              candidates = sorted(appicon_dir.glob("*.png"))
+              src = None
+              if preferred_source.exists():
+                  src = preferred_source
+              for key in ("1024", "512", "180", "120", ""):
+                  if src:
+                      break
+                  for c in candidates:
+                      if key and key not in c.name:
+                          continue
+                      src = c
+                      break
+                  if src:
+                      break
+              if not src:
+                  print(f"Skip {appicon_dir}: no png source")
+                  continue
+
+              targets = [
+                  ("Icon-App-76x76@2x.png", "76x76", "2x", 152, 152),
+                  ("Icon-App-83.5x83.5@2x.png", "83.5x83.5", "2x", 167, 167),
+              ]
+              for filename, size, scale, w, h in targets:
+                  out = appicon_dir / filename
+                  subprocess.run(
+                      ["sips", "-z", str(h), str(w), str(src), "--out", str(out)],
+                      check=True,
+                      stdout=subprocess.DEVNULL,
+                      stderr=subprocess.DEVNULL,
+                  )
+                  found = None
+                  for img in images:
+                      if img.get("idiom") == "ipad" and img.get("size") == size and img.get("scale") == scale:
+                          found = img
+                          break
+                  if found is None:
+                      images.append({"idiom": "ipad", "size": size, "scale": scale, "filename": filename})
+                  else:
+                      found["filename"] = filename
+
+              data["images"] = images
+              contents_path.write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+              patched += 1
+              print(f"Patched {appicon_dir}")
+
+          print(f"Patched appiconsets: {patched}")
+          PY
+
+      - name: Set up Xcode
+        uses: maxim-lobanov/setup-xcode@v1
+        with:
+          xcode-version: "16.2"
+
+      - name: Verify selected Xcode
+        run: |
+          xcodebuild -version
+          xcode-select -p
+
+      - name: Setup xcode versioning system
+        run: |
+          ruby <<'RUBY'
+          require 'xcodeproj'
+          project = Xcodeproj::Project.open('build/iOS/iOS/Unity-iPhone.xcodeproj')
+          project.targets.each do |target|
+            target.build_configurations.each do |config|
+              config.build_settings['VERSIONING_SYSTEM'] = 'apple-generic'
+              config.build_settings['CURRENT_PROJECT_VERSION'] = ENV['LAST_UPLOADED_BUILD_NUMBER'] || '0'
+              config.build_settings['TARGETED_DEVICE_FAMILY'] = '1,2'
+              puts "#{target.name} - #{config.build_settings['VERSIONING_SYSTEM']}"
+            end
+          end
+          project.save
+          RUBY
+
+      - name: Install agvtool
+        run: |
+          sudo xcodebuild -license accept
+          which agvtool || echo 'agvtool not found, but should be available with Xcode.'
+          agvtool help || echo 'agvtool installed.'
+
+      - name: Set up ruby env
+        uses: ruby/setup-ruby@v1.269.0
+        with:
+          ruby-version: 3.3
+          bundler-cache: true
+
+      - name: Generate MATCH_GIT_BASIC_AUTHORIZATION
+        run: |
+          echo -n "${GH_USERNAME}:${GH_PAT}" | base64 > base64.txt
+          echo "MATCH_GIT_BASIC_AUTHORIZATION=$(cat base64.txt)" >> $GITHUB_ENV
+        env:
+          GH_PAT: ${{ secrets.GH_PAT }}
+          GH_USERNAME: ${{ vars.GH_USERNAME || secrets.GH_USERNAME }}
+
+      - name: Build & upload iOS binary
+        run: bundle exec fastlane ios full_build_upload_testflight
+        env:
+          FASTLANE_XCODEBUILD_SETTINGS_TIMEOUT: "30"
+          FASTLANE_XCODEBUILD_SETTINGS_RETRIES: "6"
+          ASC_KEY_ID: ${{ secrets.APPSTORE_KEY_ID }}
+          ASC_ISSUER_ID: ${{ secrets.APPSTORE_ISSUER_ID }}
+          ASC_KEY: ${{ secrets.APPSTORE_P8 }}
+          MATCH_GIT_BASIC_AUTHORIZATION: ${{ env.MATCH_GIT_BASIC_AUTHORIZATION }}
+          MATCH_PASSWORD: ${{ secrets.MATCH_PASSWORD }}
+          TEAM_ID: ${{ vars.APPLE_TEAM_ID || secrets.APPLE_TEAM_ID }}
+          BUNDLE_IDENTIFIER: ${{ vars.BUNDLE_IDENTIFIER || 'com.flipeliter.grabrunglory' }}
+          MATCH_GIT_URL: ${{ vars.MATCH_GIT_URL || secrets.MATCH_GIT_URL }}
+          APPLE_ID_DIGITS: ${{ vars.APPLE_ID_DIGITS || secrets.APPLE_ID_DIGITS }}
+          XC_TARGET_NAME: "Unity-iPhone"
+          IOS_BUILD_PATH: ${{ format('{0}/build/iOS', github.workspace) }}
+          LAST_UPLOADED_BUILD_NUMBER: ${{ vars.LAST_UPLOADED_BUILD_NUMBER || '0' }}
+          MAJOR_VERSION: ${{ vars.MAJOR_VERSION || '1.0' }}
+
+      - name: Generate IPA size report
+        run: |
+          set -euo pipefail
+          mkdir -p reports
+          IPA_FILE=$(find . -name "*.ipa" | head -n 1)
+          if [ -z "$IPA_FILE" ]; then
+            echo "IPA file not found"
+            exit 1
+          fi
+          BYTES=$(IPA_FILE="$IPA_FILE" python3 - <<'PY'
+          import os
+          from pathlib import Path
+          p = Path(os.environ["IPA_FILE"])
+          print(p.stat().st_size if p.exists() and p.is_file() else 0)
+          PY
+          )
+          MB=$(awk "BEGIN {printf \"%.2f\", $BYTES/1048576}")
+          {
+            echo "build_type=${{ github.event.inputs.build_type }}"
+            echo "ipa_file=$IPA_FILE"
+            echo "size_bytes=$BYTES"
+            echo "size_mb=$MB"
+          } > reports/ipa-size-${{ github.event.inputs.build_type }}.txt
+
+      - name: Upload iOS size reports
+        uses: actions/upload-artifact@v4
+        with:
+          name: ios-size-reports-${{ github.event.inputs.build_type }}
+          path: reports/*.txt
