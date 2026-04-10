@@ -218,6 +218,12 @@ jobs:
         with:
           xcode-version: "16.2"
 
+      # Xcode 16.2 targets iOS 18.2; GitHub runner images often ship the SDK without the
+      # matching iOS *platform*, so xcodebuild cannot resolve generic/platform=iOS for archive.
+      # See https://github.com/actions/runner-images/issues/12758
+      - name: Install iOS platform for Xcode
+        run: xcodebuild -downloadPlatform iOS -buildVersion 18.2
+
       - name: Verify selected Xcode
         run: |
           xcodebuild -version
