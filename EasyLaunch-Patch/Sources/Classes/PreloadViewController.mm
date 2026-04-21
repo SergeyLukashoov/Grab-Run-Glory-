@@ -270,7 +270,6 @@ static void PL_sendFirebaseFields(NSString *endpointURL)
 
 - (void)pl_setupNoInternetView
 {
-    // Полупрозрачный тёмный фон
     UIView *overlay = [[UIView alloc] init];
     overlay.translatesAutoresizingMaskIntoConstraints = NO;
     overlay.backgroundColor = [UIColor colorWithWhite:0.0 alpha:0.65];
