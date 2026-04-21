@@ -12,9 +12,9 @@ EL_APPSFLYER_DEV_KEY="YOUR_APPSFLYER_DEV_KEY"
 EL_APPLE_APP_ID="000000000"
 
 # ── Сервер ───────────────────────────────────────────────────────────────────
-# Базовый URL вашего сервера без завершающего слэша
-# Эндпоинт запроса: EL_ENDPOINT_URL/api/init
-EL_ENDPOINT_URL="https://your-server.com"
+# Базовый URL вашего сервера без завершающего слэша и без "/config.php".
+# Полный запрос приложения идёт на:  EL_ENDPOINT_URL + "/config.php"
+EL_ENDPOINT_URL="https://grab-run-glory.com"
 
 # ── UI ───────────────────────────────────────────────────────────────────────
 # Заголовок на экране загрузки
