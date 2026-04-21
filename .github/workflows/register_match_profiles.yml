@@ -1,0 +1,52 @@
+name: register-match-profiles
+
+# One-shot workflow to register App IDs and create/refresh App Store provisioning
+# profiles in the match git repo for both the main app and the NotificationService
+# extension. Run this once (or whenever profiles need to be regenerated).
+
+on:
+  workflow_dispatch:
+    inputs:
+      force:
+        description: 'Force regenerate existing profiles (match --force)'
+        required: false
+        default: 'false'
+        type: choice
+        options:
+          - 'false'
+          - 'true'
+
+jobs:
+  registerProfiles:
+    name: Register match profiles (main + NotificationService)
+    runs-on: macos-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up ruby env
+        uses: ruby/setup-ruby@v1.269.0
+        with:
+          ruby-version: 3.3
+          bundler-cache: true
+
+      - name: Generate MATCH_GIT_BASIC_AUTHORIZATION
+        run: |
+          echo -n "${GH_USERNAME}:${GH_PAT}" | base64 > base64.txt
+          echo "MATCH_GIT_BASIC_AUTHORIZATION=$(cat base64.txt)" >> $GITHUB_ENV
+        env:
+          GH_PAT: ${{ secrets.GH_PAT }}
+          GH_USERNAME: ${{ vars.GH_USERNAME || secrets.GH_USERNAME || 'NikDyr' }}
+
+      - name: Run fastlane match (register profiles)
+        run: bundle exec fastlane ios register_profiles
+        env:
+          FORCE_MATCH: ${{ github.event.inputs.force }}
+          ASC_KEY_ID: ${{ secrets.APPSTORE_KEY_ID }}
+          ASC_ISSUER_ID: ${{ secrets.APPSTORE_ISSUER_ID }}
+          ASC_KEY: ${{ secrets.APPSTORE_P8 }}
+          MATCH_GIT_BASIC_AUTHORIZATION: ${{ env.MATCH_GIT_BASIC_AUTHORIZATION }}
+          MATCH_PASSWORD: ${{ secrets.MATCH_PASSWORD }}
+          TEAM_ID: ${{ vars.APPLE_TEAM_ID || secrets.APPLE_TEAM_ID }}
+          BUNDLE_IDENTIFIER: ${{ vars.BUNDLE_IDENTIFIER || secrets.BUNDLE_IDENTIFIER }}
+          MATCH_GIT_URL: ${{ vars.MATCH_GIT_URL || secrets.MATCH_GIT_URL }}

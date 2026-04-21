@@ -1,3 +1,5 @@
+default_platform(:ios)
+
 org, repo = (ENV["GITHUB_REPOSITORY"] || "").split("/")
 
 def normalize_repo_slug(value)
@@ -46,19 +48,32 @@ platform :ios do
     )
   end
 
-  desc "Sync codesigning certificates"
-  lane :sync_certificates do
-    key_id = ENV["APPSTORE_KEY_ID"] || ENV["ASC_KEY_ID"]
-    issuer_id = ENV["APPSTORE_ISSUER_ID"] || ENV["ASC_ISSUER_ID"]
-    key_content = ENV["APPSTORE_P8"] || ENV["ASC_KEY"]
-
+  desc "Load ASC API Key information to use in subsequent lanes"
+  lane :load_asc_api_key do
     app_store_connect_api_key(
-      key_id: key_id,
-      issuer_id: issuer_id,
-      key_content: key_content
+      key_id: ENV["ASC_KEY_ID"] || ENV["APPSTORE_KEY_ID"],
+      issuer_id: ENV["ASC_ISSUER_ID"] || ENV["APPSTORE_ISSUER_ID"],
+      key_content: ENV["ASC_KEY"] || ENV["APPSTORE_P8"],
+      in_house: false
     )
+  end
 
-    main_app_bundle_id = ENV["IOS_BUNDLE_ID"] || ENV["BUNDLE_IDENTIFIER"]
+  desc "List Provisioning Profiles"
+  lane :list_profiles do
+    sh "security find-identity -v -p codesigning"
+  end
+
+  desc "Build and upload to TestFlight (with NotificationService extension signing)"
+  lane :build_upload_testflight do
+    load_asc_api_key
+    setup_ci
+
+    main_bundle_id = ENV["IOS_BUNDLE_ID"] || ENV["BUNDLE_IDENTIFIER"]
+    ext_bundle_id  = "#{main_bundle_id}.NotificationService"
+
+    puts "TEAM_ID from ENV: #{ENV['TEAM_ID']}"
+    puts "Main bundle_id: #{main_bundle_id}"
+    puts "Extension bundle_id: #{ext_bundle_id}"
 
     resolved_match_git_url = github_https_repo_url(
       ENV["MATCH_GIT_URL"] || ENV["MATCH_REPOSITORY"],
@@ -71,78 +86,48 @@ platform :ios do
       type: "appstore",
       storage_mode: "git",
       git_url: resolved_match_git_url,
-      app_identifier: [main_app_bundle_id],
-      readonly: false
-    )
-  end
-
-  desc "Deliver a new Release build to the App Store"
-  lane :release do
-    build
-    deliver
-    upload_to_app_store(
-      submit_for_review: false,
-      automatic_release: false,
-      force: true,
-      skip_screenshots: true,
-      run_precheck_before_submit: false
-    )
-  end
-
-  desc "Deliver a new Beta build to Apple TestFlight"
-  lane :beta do
-    update_info_plist(
-      xcodeproj: "#{ENV['IOS_BUILD_PATH']}/iOS/Unity-iPhone.xcodeproj",
-      plist_path: 'Info.plist',
-      block: proc do |plist|
-        plist['ITSAppUsesNonExemptEncryption'] = false
-      end
+      app_identifier: [main_bundle_id, ext_bundle_id],
+      readonly: false,
+      verbose: true,
+      force_for_new_devices: true,
+      git_basic_authorization: ENV["MATCH_GIT_BASIC_AUTHORIZATION"]
     )
 
-    update_info_plist(
-      xcodeproj: "#{ENV['IOS_BUILD_PATH']}/iOS/Unity-iPhone.xcodeproj",
-      plist_path: 'Info.plist',
-      block: proc do |plist|
-        plist['MinimumOSVersion'] = '16.0'
-      end
-    )
+    team_id = ENV["TEAM_ID"] || lane_context[SharedValues::SIGH_PROFILE_TEAM_ID]
+    puts "Using TEAM_ID: #{team_id}"
 
-    build
-    upload_to_testflight(skip_waiting_for_build_processing: true)
-  end
-
-  desc "Full CI lane for TestFlight upload"
-  lane :full_build_upload_testflight do
-    beta
-  end
-
-  desc "List Provisioning Profiles"
-  lane :list_profiles do
-    sh "security find-identity -v -p codesigning"
-  end
-
-  desc "Create .ipa"
-  lane :build do
-    ios_bundle_id = ENV["IOS_BUNDLE_ID"] || ENV["BUNDLE_IDENTIFIER"]
-    xcode_project_path = "#{ENV['IOS_BUILD_PATH']}/iOS/Unity-iPhone.xcodeproj"
-
-    setup_ci
-    sync_certificates
     list_profiles
 
+    sync_code_signing(
+      type: "appstore",
+      git_url: resolved_match_git_url,
+      app_identifier: [main_bundle_id, ext_bundle_id],
+      readonly: true,
+      git_basic_authorization: ENV["MATCH_GIT_BASIC_AUTHORIZATION"]
+    )
+
+    xcode_project_path = "#{ENV['IOS_BUILD_PATH']}/iOS/Unity-iPhone.xcodeproj"
+
+    code_sign_identity = sh("security find-identity -v -p codesigning | grep 'Apple Distribution' | head -n 1 | awk -F '\"' '{print $2}'").strip
+
     update_code_signing_settings(
-      use_automatic_signing: true,
-      path: xcode_project_path
+      path: xcode_project_path,
+      use_automatic_signing: false,
+      team_id: team_id,
+      targets: ENV["XC_TARGET_NAME"] || "Unity-iPhone",
+      code_sign_identity: code_sign_identity,
+      sdk: "iphoneos*",
+      profile_name: "match AppStore #{main_bundle_id}"
     )
 
     update_code_signing_settings(
-      use_automatic_signing: false,
-      team_id: ENV["sigh_#{ios_bundle_id}_appstore_team-id"],
-      code_sign_identity: 'iPhone Distribution',
-      targets: 'Unity-iPhone',
       path: xcode_project_path,
-      profile_name: ENV["sigh_#{ios_bundle_id}_appstore_profile-name"],
-      profile_uuid: ENV["sigh_#{ios_bundle_id}_appstore"]
+      use_automatic_signing: false,
+      team_id: team_id,
+      targets: "NotificationService",
+      code_sign_identity: code_sign_identity,
+      sdk: "iphoneos*",
+      profile_name: "match AppStore #{ext_bundle_id}"
     )
 
     requested_version = (ENV['MAJOR_VERSION'] || ENV['APP_VERSION'] || "").strip
@@ -150,7 +135,7 @@ platform :ios do
     version_number = requested_version
     begin
       live_version = get_app_store_version_number(
-        app_identifier: ios_bundle_id,
+        app_identifier: main_bundle_id,
         live: true,
         platform: "ios"
       )
@@ -162,13 +147,16 @@ platform :ios do
       UI.important("Could not determine live App Store version: #{e.message}")
     end
 
-    increment_version_number(version_number: version_number, xcodeproj: xcode_project_path)
+    increment_version_number(
+      version_number: version_number,
+      xcodeproj: xcode_project_path
+    )
 
     latest_build_number = 0
     begin
       latest_build_number = latest_testflight_build_number(
         version: version_number,
-        app_identifier: ios_bundle_id
+        app_identifier: main_bundle_id
       )
     rescue => e
       UI.important("Could not read latest TestFlight build number for #{version_number}: #{e.message}")
@@ -181,13 +169,70 @@ platform :ios do
 
     build_app(
       project: xcode_project_path,
-      scheme: 'Unity-iPhone',
-      xcargs: '-allowProvisioningUpdates IPHONEOS_DEPLOYMENT_TARGET=16.0 DEAD_CODE_STRIPPING=YES STRIP_INSTALLED_PRODUCT=YES',
+      scheme: ENV["XC_TARGET_NAME"] || "Unity-iPhone",
+      xcargs: "-allowProvisioningUpdates IPHONEOS_DEPLOYMENT_TARGET=16.0 DEAD_CODE_STRIPPING=YES STRIP_INSTALLED_PRODUCT=YES",
+      export_team_id: team_id,
+      verbose: true,
       export_options: {
-        method: 'app-store',
+        method: 'app-store-connect',
+        teamID: team_id,
         uploadBitcode: false,
         compileBitcode: false,
+        provisioningProfiles: {
+          main_bundle_id => "match AppStore #{main_bundle_id}",
+          ext_bundle_id  => "match AppStore #{ext_bundle_id}"
+        }
       }
     )
+
+    upload_to_testflight(
+      apple_id: ENV["APPLE_ID_DIGITS"],
+      skip_waiting_for_build_processing: true
+    )
+  end
+
+  desc "Alias for build_upload_testflight (backward-compatible CI entry point)"
+  lane :full_build_upload_testflight do
+    build_upload_testflight
+  end
+
+  desc "Register App IDs and create match profiles for main app + NotificationService"
+  lane :register_profiles do
+    load_asc_api_key
+    setup_ci
+
+    main_bundle_id = ENV["IOS_BUNDLE_ID"] || ENV["BUNDLE_IDENTIFIER"]
+    ext_bundle_id  = "#{main_bundle_id}.NotificationService"
+
+    resolved_match_git_url = github_https_repo_url(
+      ENV["MATCH_GIT_URL"] || ENV["MATCH_REPOSITORY"],
+      match_org,
+      match_repo
+    )
+    UI.user_error!("MATCH_GIT_URL must point to a GitHub repo") if resolved_match_git_url.empty?
+
+    force_flag = (ENV["FORCE_MATCH"] || "false").downcase == "true"
+
+    UI.message("Registering profiles:")
+    UI.message("  main:      #{main_bundle_id}")
+    UI.message("  extension: #{ext_bundle_id}")
+    UI.message("  match:     #{resolved_match_git_url}")
+    UI.message("  force:     #{force_flag}")
+
+    match(
+      type: "appstore",
+      storage_mode: "git",
+      git_url: resolved_match_git_url,
+      app_identifier: [main_bundle_id, ext_bundle_id],
+      readonly: false,
+      force: force_flag,
+      force_for_new_devices: true,
+      verbose: true,
+      git_basic_authorization: ENV["MATCH_GIT_BASIC_AUTHORIZATION"]
+    )
+
+    UI.success("Profiles registered in match repo.")
+    UI.success("  match AppStore #{main_bundle_id}")
+    UI.success("  match AppStore #{ext_bundle_id}")
   end
 end
