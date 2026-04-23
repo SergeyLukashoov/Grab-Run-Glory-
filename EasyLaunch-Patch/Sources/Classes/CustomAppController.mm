@@ -6,6 +6,10 @@
 #import "ScreenCaptureBlocker.h"
 #import <UserNotifications/UserNotifications.h>
 
+@interface UnityAppController (EasyLaunchForwardDecl)
+- (void)initUnityWithScene:(UIWindowScene *)scene;
+@end
+
 // ─────────────────────────────────────────────────────────────────────────────
 // MARK: - Private interface
 // ─────────────────────────────────────────────────────────────────────────────
