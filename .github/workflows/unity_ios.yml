@@ -361,12 +361,14 @@ jobs:
       # See https://github.com/actions/runner-images/issues/12758
       - name: Install iOS platform for Xcode
         run: |
-          if xcrun simctl runtime list 2>/dev/null | grep -q "iOS 18"; then
-            echo "iOS platform already installed — skipping download"
+          echo "--- Checking available iOS SDKs ---"
+          xcodebuild -showsdks 2>/dev/null | grep -i ios || true
+
+          if xcodebuild -showsdks 2>/dev/null | grep -q "iphoneos18"; then
+            echo "iOS 18.x SDK already present — skipping download"
           else
-            xcodebuild -downloadPlatform iOS -buildVersion 18.2 || {
-              echo "::warning::downloadPlatform failed (exit $?) — continuing, SDK may already be present"
-            }
+            echo "iOS SDK not found — downloading platform..."
+            xcodebuild -downloadPlatform iOS
           fi
 
       - name: Verify selected Xcode
