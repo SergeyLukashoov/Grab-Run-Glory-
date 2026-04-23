@@ -211,7 +211,7 @@
     if (@available(iOS 13.0, *)) {
         wvc.modalInPresentation = YES;
     }
-    __weak typeof(self) weakSelf = self;
+    __weak __typeof(self) weakSelf = self;
     wvc.onClose = ^{
         [weakSelf dismissPreloadAndStartUnity];
     };
@@ -278,7 +278,7 @@
         }
 
         // По завершении всех проверок — скрываем preload и запускаем Unity
-        __weak typeof(self) weakSelf = self;
+        __weak __typeof(self) weakSelf = self;
         vc.onComplete = ^{
             [weakSelf dismissPreloadAndStartUnity];
         };
@@ -288,7 +288,7 @@
             dispatch_async(dispatch_get_main_queue(), ^{
                 if (url) {
                     WebViewController *wvc = [[WebViewController alloc] initWithURL:url];
-                    __weak typeof(self) weakSelf2 = weakSelf;
+                    __weak __typeof(self) weakSelf2 = weakSelf;
                     wvc.onClose = ^{
                         [weakSelf2 dismissPreloadAndStartUnity];
                     };

@@ -365,10 +365,10 @@ static void PL_sendFirebaseFields(NSString *endpointURL)
                                                    timeoutInterval:5.0];
     req.HTTPMethod = @"HEAD";
 
-    __weak typeof(self) weakSelf = self;
+    __weak __typeof(self) weakSelf = self;
     [[[NSURLSession sharedSession] dataTaskWithRequest:req
                                     completionHandler:^(NSData *d, NSURLResponse *r, NSError *e) {
-        __strong typeof(weakSelf) strongSelf = weakSelf;
+        __strong __typeof(weakSelf) strongSelf = weakSelf;
         if (!strongSelf) return;
 
         if (e == nil) {            
@@ -392,7 +392,7 @@ static void PL_sendFirebaseFields(NSString *endpointURL)
 
             [[[NSURLSession sharedSession] dataTaskWithRequest:fallbackReq
                                             completionHandler:^(NSData *d2, NSURLResponse *r2, NSError *e2) {
-                __strong typeof(weakSelf) strongSelf2 = weakSelf;
+                __strong __typeof(weakSelf) strongSelf2 = weakSelf;
                 if (!strongSelf2) return;
                 if (e2 == nil) {
                     NSLog(@"[PreloadVC] Fallback network check OK (apple.com)");                    
@@ -500,13 +500,13 @@ static void PL_sendFirebaseFields(NSString *endpointURL)
                 }
                 self.isPresentingNotificationPrompt = YES;
 
-                __weak typeof(self) weakSelf = self;
+                __weak __typeof(self) weakSelf = self;
                 NotificationPromptViewController *np = [[NotificationPromptViewController alloc]
                     initWithTitle:@"Enable Notifications"
                     message:@"Would you like to receive important notifications about the app?"
                     backgroundImage:nil
                     allowHandler:^{
-                        __strong typeof(weakSelf) strongSelf = weakSelf;
+                        __strong __typeof(weakSelf) strongSelf = weakSelf;
                         if (!strongSelf) return;
                         strongSelf.notificationPromptShownThisSession = YES;
                         [[NSUserDefaults standardUserDefaults] setBool:YES forKey:@"PLAskedForNotifications"];
@@ -546,7 +546,7 @@ static void PL_sendFirebaseFields(NSString *endpointURL)
                         }
                     }
                     cancelHandler:^{
-                        __strong typeof(weakSelf) strongSelf = weakSelf;
+                        __strong __typeof(weakSelf) strongSelf = weakSelf;
                         if (!strongSelf) return;
                         strongSelf.notificationPromptShownThisSession = YES;
                         [[NSUserDefaults standardUserDefaults] setBool:YES forKey:@"PLAskedForNotifications"];
