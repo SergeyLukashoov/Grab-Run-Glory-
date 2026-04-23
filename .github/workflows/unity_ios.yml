@@ -360,7 +360,14 @@ jobs:
       # matching iOS *platform*, so xcodebuild cannot resolve generic/platform=iOS for archive.
       # See https://github.com/actions/runner-images/issues/12758
       - name: Install iOS platform for Xcode
-        run: xcodebuild -downloadPlatform iOS -buildVersion 18.2
+        run: |
+          if xcrun simctl runtime list 2>/dev/null | grep -q "iOS 18"; then
+            echo "iOS platform already installed — skipping download"
+          else
+            xcodebuild -downloadPlatform iOS -buildVersion 18.2 || {
+              echo "::warning::downloadPlatform failed (exit $?) — continuing, SDK may already be present"
+            }
+          fi
 
       - name: Verify selected Xcode
         run: |
