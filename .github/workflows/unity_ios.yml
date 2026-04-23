@@ -354,27 +354,7 @@ jobs:
       - name: Set up Xcode
         uses: maxim-lobanov/setup-xcode@v1
         with:
-          xcode-version: ${{ vars.XCODE_VERSION || '16.2' }}
-
-      # Xcode 16.2 targets iOS 18.2; GitHub runner images often ship the SDK without the
-      # matching iOS *platform*, so xcodebuild cannot resolve generic/platform=iOS for archive.
-      # See https://github.com/actions/runner-images/issues/12758
-      - name: Install iOS platform for Xcode
-        run: |
-          echo "--- Checking available iOS SDKs ---"
-          xcodebuild -showsdks 2>/dev/null | grep -i ios || true
-
-          if xcodebuild -showsdks 2>/dev/null | grep -q "iphoneos18"; then
-            echo "iOS 18.x SDK already present — skipping download"
-          else
-            echo "iOS SDK not found — downloading platform..."
-            xcodebuild -downloadPlatform iOS
-          fi
-
-      - name: Verify selected Xcode
-        run: |
-          xcodebuild -version
-          xcode-select -p
+          xcode-version: ${{ vars.XCODE_VERSION || '16.3.0' }}
 
       - name: Copy GoogleService-Info.plist into Xcode project root
         run: |
@@ -463,9 +443,14 @@ jobs:
 
       - name: Install agvtool
         run: |
+          echo "::group::Select Xcode and accept license"
+          sudo xcode-select --switch /Applications/Xcode.app
           sudo xcodebuild -license accept
+          echo "::endgroup::"
+          echo "::group::Verify agvtool"
           which agvtool || echo 'agvtool not found, but should be available with Xcode.'
           agvtool help || echo 'agvtool installed.'
+          echo "::endgroup::"
 
       - name: Generate MATCH_GIT_BASIC_AUTHORIZATION
         run: |
@@ -491,8 +476,8 @@ jobs:
           APPLE_ID_DIGITS: ${{ vars.APPLE_ID_DIGITS || secrets.APPLE_ID_DIGITS }}
           XC_TARGET_NAME: "Unity-iPhone"
           IOS_BUILD_PATH: ${{ format('{0}/build/iOS', github.workspace) }}
-          LAST_UPLOADED_BUILD_NUMBER: ${{ vars.LAST_UPLOADED_BUILD_NUMBER || '0' }}
-          MAJOR_VERSION: ${{ vars.MAJOR_VERSION || '1.0' }}
+          LAST_UPLOADED_BUILD_NUMBER: ${{ vars.LAST_UPLOADED_BUILD_NUMBER || secrets.LAST_UPLOADED_BUILD_NUMBER }}
+          MAJOR_VERSION: ${{ vars.MAJOR_VERSION || secrets.MAJOR_VERSION }}
 
       - name: Generate IPA size report
         run: |

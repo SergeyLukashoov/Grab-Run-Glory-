@@ -89,7 +89,7 @@ platform :ios do
       app_identifier: [main_bundle_id, ext_bundle_id],
       readonly: false,
       verbose: true,
-      force_for_new_devices: true,
+      force: true,
       git_basic_authorization: ENV["MATCH_GIT_BASIC_AUTHORIZATION"]
     )
 
@@ -130,40 +130,16 @@ platform :ios do
       profile_name: "match AppStore #{ext_bundle_id}"
     )
 
-    requested_version = (ENV['MAJOR_VERSION'] || ENV['APP_VERSION'] || "").strip
-    requested_version = "1.0" if requested_version.empty?
-    version_number = requested_version
-    begin
-      live_version = get_app_store_version_number(
-        app_identifier: main_bundle_id,
-        live: true,
-        platform: "ios"
-      )
-      if Gem::Version.correct?(live_version) && Gem::Version.correct?(version_number) && Gem::Version.new(version_number) <= Gem::Version.new(live_version)
-        version_number = bump_patch_version(live_version)
-        UI.important("Requested version #{requested_version} is not higher than live #{live_version}. Using #{version_number}.")
-      end
-    rescue => e
-      UI.important("Could not determine live App Store version: #{e.message}")
-    end
-
+    version_number = ENV['MAJOR_VERSION'] || ENV['APP_VERSION'] || '1.0.0'
     increment_version_number(
       version_number: version_number,
       xcodeproj: xcode_project_path
     )
-
-    latest_build_number = 0
-    begin
-      latest_build_number = latest_testflight_build_number(
+    increment_build_number(
+      build_number: latest_testflight_build_number(
         version: version_number,
         app_identifier: main_bundle_id
-      )
-    rescue => e
-      UI.important("Could not read latest TestFlight build number for #{version_number}: #{e.message}")
-      latest_build_number = 0
-    end
-    increment_build_number(
-      build_number: latest_build_number.to_i + 1,
+      ) + 1,
       xcodeproj: xcode_project_path
     )
 
