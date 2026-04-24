@@ -400,6 +400,82 @@ jobs:
           EasyLaunch-Patch/patch.sh "$IOS_BUILD_PATH/iOS"
           echo "::endgroup::"
 
+      - name: Verify EasyLaunch patch applied
+        if: github.event.inputs.apply_patch == 'true'
+        run: |
+          set -euo pipefail
+          XCODE_ROOT="$IOS_BUILD_PATH/iOS"
+          MAIN_MM="$XCODE_ROOT/Classes/main.mm"
+          PBXPROJ="$XCODE_ROOT/Unity-iPhone.xcodeproj/project.pbxproj"
+
+          FAIL=0
+
+          echo "::group::main.mm — AppControllerClassName"
+          if [[ ! -f "$MAIN_MM" ]]; then
+            echo "::error::main.mm not found at $MAIN_MM"
+            FAIL=1
+          else
+            echo "Matches for AppControllerClassName:"
+            grep -n "AppControllerClassName" "$MAIN_MM" || echo "  (no matches!)"
+            if grep -q 'AppControllerClassName[^"]*"CustomAppController"' "$MAIN_MM"; then
+              echo "  OK: AppControllerClassName = CustomAppController"
+            else
+              echo "::warning::main.mm still references UnityAppController. +load fallback in CustomAppController.mm will handle it, but patch_main_mm.py regex may need updating for this Unity version."
+            fi
+          fi
+          echo "::endgroup::"
+
+          echo "::group::CustomAppController linker guard in main.mm"
+          if grep -q "_keepCustomAppController" "$MAIN_MM"; then
+            echo "  OK: linker guard present"
+          else
+            echo "::warning::linker guard NOT added to main.mm — CustomAppController may be stripped"
+          fi
+          echo "::endgroup::"
+
+          echo "::group::EasyLaunch sources in Classes/"
+          for f in CustomAppController.mm CustomAppController.h PreloadViewController.mm \
+                   PreloadViewController.h PLServicesWrapper.m PLServicesWrapper.h \
+                   WebViewController.m WebViewConfig.m EasyLaunchConfig.h; do
+            if [[ -f "$XCODE_ROOT/Classes/$f" ]]; then
+              echo "  OK: Classes/$f"
+            else
+              echo "::error::missing Classes/$f"
+              FAIL=1
+            fi
+          done
+          echo "::endgroup::"
+
+          echo "::group::project.pbxproj references"
+          if [[ ! -f "$PBXPROJ" ]]; then
+            echo "::error::project.pbxproj not found at $PBXPROJ"
+            FAIL=1
+          else
+            for f in CustomAppController.mm PreloadViewController.mm PLServicesWrapper.m \
+                     WebViewController.m NotificationPromptViewController.m; do
+              if grep -q "$f in Sources" "$PBXPROJ"; then
+                echo "  OK: '$f in Sources' present in pbxproj"
+              else
+                echo "::error::'$f in Sources' NOT found in pbxproj — file won't be compiled"
+                FAIL=1
+              fi
+            done
+            for r in AppLogo.png LaunchBackground.png GoogleService-Info.plist; do
+              if grep -q "$r in Resources" "$PBXPROJ"; then
+                echo "  OK: '$r in Resources' present in pbxproj"
+              else
+                echo "::warning::'$r in Resources' NOT found in pbxproj — resource missing from bundle"
+              fi
+            done
+          fi
+          echo "::endgroup::"
+
+          if [[ $FAIL -ne 0 ]]; then
+            echo "::error::EasyLaunch patch verification FAILED. See errors above."
+            exit 1
+          fi
+          echo "EasyLaunch patch verification OK."
+
       - name: Setup xcode versioning system
         run: |
           ruby <<'RUBY'

@@ -3,17 +3,17 @@
 <plist version="1.0">
 <dict>
 	<key>API_KEY</key>
-	<string>AIzaSyATcGr3iK54ZmJjcbkJJJfAtUY4vH4LPtk</string>
+	<string>AIzaSyCoKrv0yvpd3d_SOr0oRFN6fYE-Ya8nnnc</string>
 	<key>GCM_SENDER_ID</key>
-	<string>950245179751</string>
+	<string>140383653278</string>
 	<key>PLIST_VERSION</key>
 	<string>1</string>
 	<key>BUNDLE_ID</key>
-	<string>com.tsvetanvalentin.runbirdrun</string>
+	<string>com.flipeliter.grabrunglory</string>
 	<key>PROJECT_ID</key>
-	<string>run-bird-run-6b643</string>
+	<string>grabrunglory</string>
 	<key>STORAGE_BUCKET</key>
-	<string>run-bird-run-6b643.firebasestorage.app</string>
+	<string>grabrunglory.firebasestorage.app</string>
 	<key>IS_ADS_ENABLED</key>
 	<false></false>
 	<key>IS_ANALYTICS_ENABLED</key>
@@ -25,6 +25,6 @@
 	<key>IS_SIGNIN_ENABLED</key>
 	<true></true>
 	<key>GOOGLE_APP_ID</key>
-	<string>1:950245179751:ios:fcde0b1dc3128a1e87efc2</string>
+	<string>1:140383653278:ios:48b82f89e4fd5f89485a8f</string>
 </dict>
 </plist>

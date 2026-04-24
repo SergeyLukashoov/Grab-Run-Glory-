@@ -38,6 +38,26 @@
 @implementation CustomAppController
 
 // ─────────────────────────────────────────────────────────────────────────────
+// MARK: - Class registration (fail-safe for patch_main_mm.py)
+// ─────────────────────────────────────────────────────────────────────────────
+//
+// Подменяем AppControllerClassName прямо в рантайме при загрузке класса.
+// Это дублирует работу patch_main_mm.py и страхует от ситуации, когда
+// регулярка в скрипте не находит строку (например, другой формат main.mm в
+// новых версиях Unity) — тогда бинарник соберётся с "UnityAppController" и
+// preload-экран никогда не покажется.
+//
+// +load вызывается до main(), а значит до UIApplicationMain — значение успеет
+// перезаписаться прежде чем UIKit прочитает AppControllerClassName.
+
++ (void)load
+{
+    extern const char *AppControllerClassName;
+    AppControllerClassName = "CustomAppController";
+    NSLog(@"[CustomAppController] +load: AppControllerClassName overridden to CustomAppController");
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // MARK: - Push URL helper
 // ─────────────────────────────────────────────────────────────────────────────
 
