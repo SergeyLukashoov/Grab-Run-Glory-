@@ -115,6 +115,10 @@ static void PL_sendFirebaseFields(NSString *endpointURL)
 /// Защитный флаг: цепочка уже завершилась (onComplete/onOpenURL вызваны).
 /// Защищает от двойного вызова из safety-watchdog и нормального потока.
 @property (atomic, assign) BOOL preloadDidFinish;
+/// На step 4 удалось достать af_status из AppsFlyer attribution.
+/// Если NO — не кэшируем PLLaunchMode="unity", чтобы следующий запуск
+/// смог заново отработать и подхватить свежий attribution.
+@property (atomic, assign) BOOL hadAttributionStatus;
 
 @end
 
@@ -815,6 +819,7 @@ static void PL_sendFirebaseFields(NSString *endpointURL)
 
                     BOOL isNonOrganic = (afStatus.length > 0) &&
                         ([[afStatus lowercaseString] isEqualToString:@"non-organic"]);
+                    self.hadAttributionStatus = (afStatus.length > 0);
 
                     NSLog(@"[PreloadVC] af_status=%@ isNonOrganic=%d", afStatus, (int)isNonOrganic);
 
@@ -896,12 +901,25 @@ static void PL_sendFirebaseFields(NSString *endpointURL)
         }
 
         // ── Сохраняем режим запуска при первом определении ──
+        //
+        // Правило: "unity" кэшируем только если AppsFlyer attribution реально
+        // ответил (self.hadAttributionStatus). Иначе — могли не получить af_status
+        // из-за таймаута/сбоя, и тогда следующий запуск должен пройти полный
+        // chain ещё раз, чтобы подхватить свежий attribution и, возможно,
+        // переключиться на WebView.
+        // "webview" кэшируем всегда — его выбираем только при явном
+        // non-organic af_status + URL с сервера.
         NSString *savedMode = [[NSUserDefaults standardUserDefaults] stringForKey:@"PLLaunchMode"];
         if (!savedMode) {
             NSString *mode = useURL ? @"webview" : @"unity";
-            [[NSUserDefaults standardUserDefaults] setObject:mode forKey:@"PLLaunchMode"];
-            [[NSUserDefaults standardUserDefaults] synchronize];
-            NSLog(@"[PreloadVC] Launch mode saved: %@", mode);
+            BOOL shouldPersist = useURL ? YES : self.hadAttributionStatus;
+            if (shouldPersist) {
+                [[NSUserDefaults standardUserDefaults] setObject:mode forKey:@"PLLaunchMode"];
+                [[NSUserDefaults standardUserDefaults] synchronize];
+                NSLog(@"[PreloadVC] Launch mode saved: %@", mode);
+            } else {
+                NSLog(@"[PreloadVC] Launch mode NOT saved (attribution missing) — will re-run full chain next launch");
+            }
         }
 
         if (useURL) {
