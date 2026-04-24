@@ -5,10 +5,16 @@
 #import "EasyLaunchConfig.h"
 #import "ScreenCaptureBlocker.h"
 #import <UserNotifications/UserNotifications.h>
+#import <AVFoundation/AVFoundation.h>
 
 @interface UnityAppController (EasyLaunchForwardDecl)
 - (void)initUnityWithScene:(UIWindowScene *)scene;
 @end
+
+// Forward-declaration для UnityPause — реальная реализация экспортируется
+// libiPhone-lib (UnityInterface.h). Слабо слинкованная, чтобы не падать
+// если в какой-то версии Unity функции нет.
+extern "C" __attribute__((weak_import)) void UnityPause(int pause);
 
 // ─────────────────────────────────────────────────────────────────────────────
 // MARK: - Private interface
@@ -119,6 +125,15 @@
 
     BOOL result = [super application:application didFinishLaunchingWithOptions:launchOptions];
     NSLog(@"[CustomAppController] [super didFinishLaunchingWithOptions] returned %d", (int)result);
+
+    // ── Глушим Unity на время показа preload ─────────────────────────────────
+    // Unity инициализируется внутри [super didFinishLaunchingWithOptions:] и
+    // немедленно начинает проигрывать аудио/рендерить сцену. Чтобы юзер не
+    // слышал игровую музыку под preload-экраном, ставим движок на паузу:
+    // UnityPause(1) останавливает игровой цикл и звук. Снимаем паузу в
+    // dismissPreloadAndStartUnity (или перед открытием WebView — оставляем на
+    // паузе).
+    [self pl_pauseUnityForPreload];
 
     // Устанавливаем делегат ПОСЛЕ super — иначе Unity перезапишет его в своём
     // didFinishLaunchingWithOptions.
@@ -277,7 +292,10 @@
     wvc.onClose = ^{
         [weakSelf dismissPreloadAndStartUnity];
     };
-    [top presentViewController:wvc animated:YES completion:nil];
+    [top presentViewController:wvc animated:YES completion:^{
+        __strong __typeof(weakSelf) strongSelf = weakSelf;
+        [strongSelf pl_requestInterfaceOrientationUpdate];
+    }];
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -370,7 +388,11 @@
                     if (@available(iOS 13.0, *)) {
                         wvc.modalInPresentation = YES;
                     }
-                    [preloadWindow.rootViewController presentViewController:wvc animated:YES completion:nil];
+                    [preloadWindow.rootViewController presentViewController:wvc animated:YES completion:^{
+                        // Разрешаем автоповорот прямо сейчас (WebView уже в иерархии)
+                        __strong __typeof(weakSelf) strongSelfCB = weakSelf;
+                        [strongSelfCB pl_requestInterfaceOrientationUpdate];
+                    }];
                 }
             });
         };
@@ -390,6 +412,11 @@
     dispatch_async(dispatch_get_main_queue(), ^{
         UIWindow *preloadWindow = self.preloadWindow;
 
+        // Снимаем паузу с Unity именно здесь — ДО начала анимации, чтобы
+        // под preload уже начала играть корректная сцена, а не застывший
+        // кадр. Аудио-сессия будет восстановлена Unity автоматически.
+        [self pl_resumeUnityAfterPreload];
+
         // Плавное исчезновение preload-экрана.
         // Unity к этому моменту уже инициализирован через super-вызов
         // didFinishLaunchingWithOptions: / initUnityWithScene:, поэтому под
@@ -405,8 +432,48 @@
             self.preloadWindow = nil;
             self.preloadInProgress = NO;
             NSLog(@"[CustomAppController] Preload dismissed, Unity is now visible");
+            // После закрытия WebView/preload возвращаемся в portrait (Unity).
+            [self pl_requestInterfaceOrientationUpdate];
         }];
     });
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// MARK: - Unity pause helpers
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Ставит Unity на паузу, чтобы во время показа preload-экрана не играла
+/// игровая музыка и не крутилась сцена. Дополнительно принудительно
+/// деактивируем AVAudioSession — Unity в этот момент мог уже её активировать.
+- (void)pl_pauseUnityForPreload
+{
+    if (UnityPause != NULL) {
+        NSLog(@"[CustomAppController] UnityPause(1) — silencing game during preload");
+        UnityPause(1);
+    } else {
+        NSLog(@"[CustomAppController] UnityPause symbol not available — falling back to audio session deactivation");
+    }
+
+    // Дополнительная подстраховка: выключаем аудио-сессию, даже если
+    // UnityPause по какой-то причине не заглушил звук.
+    NSError *audioErr = nil;
+    [[AVAudioSession sharedInstance] setActive:NO
+                                    withOptions:AVAudioSessionSetActiveOptionNotifyOthersOnDeactivation
+                                          error:&audioErr];
+    if (audioErr) {
+        NSLog(@"[CustomAppController] AVAudioSession deactivate warning: %@", audioErr.localizedDescription);
+    }
+}
+
+/// Снимает паузу с Unity при показе финального экрана (игра или WebView).
+- (void)pl_resumeUnityAfterPreload
+{
+    if (UnityPause != NULL) {
+        NSLog(@"[CustomAppController] UnityPause(0) — resuming game");
+        UnityPause(0);
+    }
+    // Аудио-сессию восстанавливать не нужно — Unity сам её активирует
+    // при возобновлении игрового цикла.
 }
 
 /// Переустанавливаем себя как делегат нотификаций после каждого выхода на передний план —
@@ -415,6 +482,73 @@
 {
     UNUserNotificationCenter.currentNotificationCenter.delegate = self;
     [super applicationDidBecomeActive:application];
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// MARK: - Interface orientation
+// ─────────────────────────────────────────────────────────────────────────────
+//
+// Правило проекта:
+//   • Unity-сцена и preload-экран — ТОЛЬКО portrait, автоповорот запрещён.
+//   • WebView (WebViewController) — разрешены все ориентации,
+//     пользователь может поворачивать устройство свободно.
+//
+// Реализация: переопределяем application:supportedInterfaceOrientationsForWindow:
+// и смотрим на топовый presented view controller в переданном окне —
+// если это WebViewController (либо оно его content-wrapper), возвращаем All,
+// иначе Portrait. iOS берёт пересечение этого значения и supportedInterfaceOrientations
+// топового VC, поэтому дополнительно PreloadViewController/WebViewController
+// возвращают свои собственные маски.
+//
+// Info.plist должен разрешать все 4 ориентации (patch_infoplist.py это делает),
+// иначе iOS не позволит возвращать ничего, кроме разрешённого в plist.
+
+/// Ищет топовый presented view controller в данном окне и возвращает YES,
+/// если это (или его родительский контроллер) WebViewController.
+- (BOOL)pl_isWebViewTopmostInWindow:(UIWindow *)window
+{
+    UIViewController *top = window.rootViewController;
+    while (top.presentedViewController != nil) {
+        top = top.presentedViewController;
+    }
+    // Сравниваем через строковое имя класса — не зависим от forward-declare.
+    UIViewController *cursor = top;
+    while (cursor != nil) {
+        if ([cursor isKindOfClass:[WebViewController class]]) {
+            return YES;
+        }
+        cursor = cursor.parentViewController;
+    }
+    return NO;
+}
+
+- (UIInterfaceOrientationMask)application:(UIApplication *)application
+  supportedInterfaceOrientationsForWindow:(UIWindow *)window
+{
+    if ([self pl_isWebViewTopmostInWindow:window]) {
+        return UIInterfaceOrientationMaskAll;
+    }
+    return UIInterfaceOrientationMaskPortrait;
+}
+
+/// Просит iOS пересчитать ориентацию прямо сейчас — вызывается при показе
+/// и закрытии WebView, чтобы изменился режим автоповорота.
+- (void)pl_requestInterfaceOrientationUpdate
+{
+    dispatch_async(dispatch_get_main_queue(), ^{
+        if (@available(iOS 16.0, *)) {
+            for (UIScene *scene in UIApplication.sharedApplication.connectedScenes) {
+                if ([scene isKindOfClass:[UIWindowScene class]]) {
+                    UIWindowScene *ws = (UIWindowScene *)scene;
+                    for (UIWindow *w in ws.windows) {
+                        [w.rootViewController setNeedsUpdateOfSupportedInterfaceOrientations];
+                    }
+                }
+            }
+        } else {
+            [UIViewController attemptRotationToDeviceOrientation];
+        }
+    });
 }
 
 @end

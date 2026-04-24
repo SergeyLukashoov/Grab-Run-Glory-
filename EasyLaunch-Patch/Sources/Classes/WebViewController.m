@@ -500,4 +500,19 @@
     // Reset zoom scale when keyboard is hidden
     self.webView.scrollView.zoomScale = 1.0;
 }
+
+#pragma mark - Interface orientation
+// В WebView разрешаем все ориентации — пользователь может поворачивать
+// устройство свободно. Ограничение для Unity/preload делается в
+// CustomAppController.application:supportedInterfaceOrientationsForWindow:.
+
+- (UIInterfaceOrientationMask)supportedInterfaceOrientations
+{
+    return UIInterfaceOrientationMaskAll;
+}
+
+- (BOOL)shouldAutorotate
+{
+    return YES;
+}
 @end
