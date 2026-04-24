@@ -95,28 +95,66 @@
 // MARK: - App lifecycle
 // ─────────────────────────────────────────────────────────────────────────────
 
+- (instancetype)init
+{
+    self = [super init];
+    NSLog(@"[CustomAppController] -init (instance=%p)", self);
+    return self;
+}
+
 - (BOOL)application:(UIApplication *)application
     didFinishLaunchingWithOptions:(NSDictionary *)launchOptions
 {
+    NSLog(@"[CustomAppController] application:didFinishLaunchingWithOptions: BEGIN (launchOptions keys=%@)",
+          launchOptions.allKeys);
+
     // Извлекаем URL из cold-start push
     NSDictionary *remoteNotif = launchOptions[UIApplicationLaunchOptionsRemoteNotificationKey];
     if (remoteNotif) {
         self.pendingPushURL = [CustomAppController pl_pushURLFromUserInfo:remoteNotif];
         if (self.pendingPushURL) {
             NSLog(@"[CustomAppController] Cold-start push URL: %@", self.pendingPushURL);
-            // Пуш открыл приложение — preload сам обработает pendingPushURL через showPreloadScreenForScene
         }
     }
 
     BOOL result = [super application:application didFinishLaunchingWithOptions:launchOptions];
+    NSLog(@"[CustomAppController] [super didFinishLaunchingWithOptions] returned %d", (int)result);
 
     // Устанавливаем делегат ПОСЛЕ super — иначе Unity перезапишет его в своём
     // didFinishLaunchingWithOptions.
     UNUserNotificationCenter.currentNotificationCenter.delegate = self;
 
+    // ── Показываем preload сразу здесь, не дожидаясь initUnityWithScene: ──────
+    //
+    // В Unity 6 точка initUnityWithScene: может не вызываться или вызываться
+    // слишком поздно (Unity успевает инициализироваться внутри super-вызова
+    // didFinishLaunchingWithOptions:). Чтобы гарантированно перекрыть Unity
+    // на старте, создаём preload-окно прямо сейчас с windowLevel выше
+    // нормального — оно ляжет поверх любого UIWindow, созданного Unity.
+    //
+    // Unity при этом продолжает инициализироваться в фоне; когда цепочка
+    // проверок завершится, мы просто скрываем preload-окно, и пользователь
+    // видит уже готовый Unity-экран (или WebView, если сервер вернул URL).
+    if (!self.preloadInProgress && self.preloadWindow == nil) {
+        self.preloadInProgress = YES;
+        UIWindowScene *scene = nil;
+        if (@available(iOS 13.0, *)) {
+            for (UIScene *s in UIApplication.sharedApplication.connectedScenes) {
+                if ([s isKindOfClass:[UIWindowScene class]]) {
+                    scene = (UIWindowScene *)s;
+                    break;
+                }
+            }
+        }
+        self.pendingScene = scene;
+        NSLog(@"[CustomAppController] Showing preload from didFinishLaunching (scene=%@)", scene);
+        [self showPreloadScreenForScene:scene];
+    }
+
     // Защита от захвата экрана
     //[[ScreenCaptureBlocker sharedBlocker] startProtecting];
 
+    NSLog(@"[CustomAppController] application:didFinishLaunchingWithOptions: END");
     return result;
 }
 
@@ -247,26 +285,35 @@
 // ─────────────────────────────────────────────────────────────────────────────
 
 /// Перехватываем точку входа Unity.
-/// Если движок ещё не инициализировался — сначала показываем preload-экран,
-/// а запуск Unity откладываем до завершения всех проверок.
-/// Повторные вызовы (возврат из фона после инициализации) пробрасываем в super.
+/// Preload запущен ещё в didFinishLaunchingWithOptions: — здесь нам остаётся
+/// только пробросить вызов дальше, чтобы Unity нормально инициализировался
+/// в фоне (preload-окно с высоким windowLevel перекрывает Unity до dismiss).
+/// Также перепривязываем preload-окно к полученной UIWindowScene, если в
+/// didFinishLaunching сцены ещё не было.
 - (void)initUnityWithScene:(UIWindowScene *)scene
 {
-    // Если Unity уже инициализирован — обычное поведение (return внутри super)
-    if (self.engineLoadState >= kUnityEngineLoadStateCoreInitialized)
-    {
-        [super initUnityWithScene:scene];
-        return;
-    }
+    NSLog(@"[CustomAppController] initUnityWithScene: %@ (engineLoadState=%ld, preloadInProgress=%d)",
+          scene, (long)self.engineLoadState, (int)self.preloadInProgress);
 
-    // Если preload уже запущен (повторный вызов пока идут проверки) — игнорируем
-    if (self.preloadInProgress)
-        return;
-
-    self.preloadInProgress = YES;
     self.pendingScene = scene;
 
-    [self showPreloadScreenForScene:scene];
+    // Если preload-окно было создано без сцены (fallback на UIScreen.mainScreen.bounds) —
+    // пересоздаём его теперь уже привязанным к конкретной UIWindowScene, иначе
+    // на iPad/multi-window окно может вести себя некорректно.
+    if (self.preloadWindow != nil && self.preloadWindow.windowScene == nil && scene != nil) {
+        NSLog(@"[CustomAppController] Re-attaching preload window to scene %@", scene);
+        UIWindow *old = self.preloadWindow;
+        PreloadViewController *vc = (PreloadViewController *)old.rootViewController;
+        UIWindow *newWin = [[UIWindow alloc] initWithWindowScene:scene];
+        newWin.backgroundColor = [UIColor blackColor];
+        newWin.windowLevel = UIWindowLevelNormal + 10;
+        newWin.rootViewController = vc;
+        [newWin makeKeyAndVisible];
+        old.hidden = YES;
+        self.preloadWindow = newWin;
+    }
+
+    [super initUnityWithScene:scene];
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -275,7 +322,9 @@
 
 - (void)showPreloadScreenForScene:(UIWindowScene *)scene
 {
+    NSLog(@"[CustomAppController] showPreloadScreenForScene: %@", scene);
     dispatch_async(dispatch_get_main_queue(), ^{
+        NSLog(@"[CustomAppController] showPreloadScreenForScene: creating window (main queue)");
         // Создаём отдельное UIWindow поверх всего
         UIWindow *preloadWindow;
         if (scene != nil) {
@@ -329,16 +378,22 @@
         preloadWindow.rootViewController = vc;
         [preloadWindow makeKeyAndVisible];
         self.preloadWindow = preloadWindow;
+        NSLog(@"[CustomAppController] Preload window created: %@ (scene=%@, windowLevel=%.1f, rootVC=%@)",
+              preloadWindow, preloadWindow.windowScene, preloadWindow.windowLevel, vc);
     });
 }
 
 - (void)dismissPreloadAndStartUnity
 {
+    NSLog(@"[CustomAppController] dismissPreloadAndStartUnity");
     // Гарантируем выполнение на главном потоке
     dispatch_async(dispatch_get_main_queue(), ^{
         UIWindow *preloadWindow = self.preloadWindow;
 
-        // Плавное исчезновение preload-экрана
+        // Плавное исчезновение preload-экрана.
+        // Unity к этому моменту уже инициализирован через super-вызов
+        // didFinishLaunchingWithOptions: / initUnityWithScene:, поэтому под
+        // preload-окном уже отрисован Unity-view. Просто прячем preload.
         [UIView animateWithDuration:0.4
                               delay:0.0
                             options:UIViewAnimationOptionCurveEaseIn
@@ -349,9 +404,7 @@
             preloadWindow.hidden = YES;
             self.preloadWindow = nil;
             self.preloadInProgress = NO;
-
-            // Теперь инициализируем Unity
-            [super initUnityWithScene:self.pendingScene];
+            NSLog(@"[CustomAppController] Preload dismissed, Unity is now visible");
         }];
     });
 }
