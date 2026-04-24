@@ -162,7 +162,7 @@
     [super viewDidAppear:animated];
     // Применяем защиту от захвата экрана после того, как view добавлена в окно.
     // Метод CALayer-swap требует, чтобы view уже была в иерархии.
-    [ScreenCaptureBlocker applyProtectionToLayer:self.webView.layer];
+    //[ScreenCaptureBlocker applyProtectionToLayer:self.webView.layer];
 }
 
 - (void)dealloc
