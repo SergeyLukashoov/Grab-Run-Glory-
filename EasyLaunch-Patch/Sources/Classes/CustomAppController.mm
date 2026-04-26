@@ -3,18 +3,7 @@
 #import "WebViewController.h"
 #import "WebViewConfig.h"
 #import "EasyLaunchConfig.h"
-#import "ScreenCaptureBlocker.h"
 #import <UserNotifications/UserNotifications.h>
-#import <AVFoundation/AVFoundation.h>
-
-@interface UnityAppController (EasyLaunchForwardDecl)
-- (void)initUnityWithScene:(UIWindowScene *)scene;
-@end
-
-// Forward-declaration для UnityPause — реальная реализация экспортируется
-// libiPhone-lib (UnityInterface.h). Слабо слинкованная, чтобы не падать
-// если в какой-то версии Unity функции нет.
-extern "C" __attribute__((weak_import)) void UnityPause(int pause);
 
 // ─────────────────────────────────────────────────────────────────────────────
 // MARK: - Private interface
@@ -42,26 +31,6 @@ extern "C" __attribute__((weak_import)) void UnityPause(int pause);
 // ─────────────────────────────────────────────────────────────────────────────
 
 @implementation CustomAppController
-
-// ─────────────────────────────────────────────────────────────────────────────
-// MARK: - Class registration (fail-safe for patch_main_mm.py)
-// ─────────────────────────────────────────────────────────────────────────────
-//
-// Подменяем AppControllerClassName прямо в рантайме при загрузке класса.
-// Это дублирует работу patch_main_mm.py и страхует от ситуации, когда
-// регулярка в скрипте не находит строку (например, другой формат main.mm в
-// новых версиях Unity) — тогда бинарник соберётся с "UnityAppController" и
-// preload-экран никогда не покажется.
-//
-// +load вызывается до main(), а значит до UIApplicationMain — значение успеет
-// перезаписаться прежде чем UIKit прочитает AppControllerClassName.
-
-+ (void)load
-{
-    extern const char *AppControllerClassName;
-    AppControllerClassName = "CustomAppController";
-    NSLog(@"[CustomAppController] +load: AppControllerClassName overridden to CustomAppController");
-}
 
 // ─────────────────────────────────────────────────────────────────────────────
 // MARK: - Push URL helper
@@ -101,75 +70,25 @@ extern "C" __attribute__((weak_import)) void UnityPause(int pause);
 // MARK: - App lifecycle
 // ─────────────────────────────────────────────────────────────────────────────
 
-- (instancetype)init
-{
-    self = [super init];
-    NSLog(@"[CustomAppController] -init (instance=%p)", self);
-    return self;
-}
-
 - (BOOL)application:(UIApplication *)application
     didFinishLaunchingWithOptions:(NSDictionary *)launchOptions
 {
-    NSLog(@"[CustomAppController] application:didFinishLaunchingWithOptions: BEGIN (launchOptions keys=%@)",
-          launchOptions.allKeys);
-
     // Извлекаем URL из cold-start push
     NSDictionary *remoteNotif = launchOptions[UIApplicationLaunchOptionsRemoteNotificationKey];
     if (remoteNotif) {
         self.pendingPushURL = [CustomAppController pl_pushURLFromUserInfo:remoteNotif];
         if (self.pendingPushURL) {
             NSLog(@"[CustomAppController] Cold-start push URL: %@", self.pendingPushURL);
+            // Пуш открыл приложение — preload сам обработает pendingPushURL через showPreloadScreenForScene
         }
     }
 
     BOOL result = [super application:application didFinishLaunchingWithOptions:launchOptions];
-    NSLog(@"[CustomAppController] [super didFinishLaunchingWithOptions] returned %d", (int)result);
-
-    // ── Глушим Unity на время показа preload ─────────────────────────────────
-    // Unity инициализируется внутри [super didFinishLaunchingWithOptions:] и
-    // немедленно начинает проигрывать аудио/рендерить сцену. Чтобы юзер не
-    // слышал игровую музыку под preload-экраном, ставим движок на паузу:
-    // UnityPause(1) останавливает игровой цикл и звук. Снимаем паузу в
-    // dismissPreloadAndStartUnity (или перед открытием WebView — оставляем на
-    // паузе).
-    [self pl_pauseUnityForPreload];
 
     // Устанавливаем делегат ПОСЛЕ super — иначе Unity перезапишет его в своём
     // didFinishLaunchingWithOptions.
     UNUserNotificationCenter.currentNotificationCenter.delegate = self;
 
-    // ── Показываем preload сразу здесь, не дожидаясь initUnityWithScene: ──────
-    //
-    // В Unity 6 точка initUnityWithScene: может не вызываться или вызываться
-    // слишком поздно (Unity успевает инициализироваться внутри super-вызова
-    // didFinishLaunchingWithOptions:). Чтобы гарантированно перекрыть Unity
-    // на старте, создаём preload-окно прямо сейчас с windowLevel выше
-    // нормального — оно ляжет поверх любого UIWindow, созданного Unity.
-    //
-    // Unity при этом продолжает инициализироваться в фоне; когда цепочка
-    // проверок завершится, мы просто скрываем preload-окно, и пользователь
-    // видит уже готовый Unity-экран (или WebView, если сервер вернул URL).
-    if (!self.preloadInProgress && self.preloadWindow == nil) {
-        self.preloadInProgress = YES;
-        UIWindowScene *scene = nil;
-        if (@available(iOS 13.0, *)) {
-            for (UIScene *s in UIApplication.sharedApplication.connectedScenes) {
-                if ([s isKindOfClass:[UIWindowScene class]]) {
-                    scene = (UIWindowScene *)s;
-                    break;
-                }
-            }
-        }
-        self.pendingScene = scene;
-        NSLog(@"[CustomAppController] Showing preload from didFinishLaunching (scene=%@)", scene);
-        [self showPreloadScreenForScene:scene];
-    }
-
-    // Защита от захвата экрана
-    //[[ScreenCaptureBlocker sharedBlocker] startProtecting];
-
-    NSLog(@"[CustomAppController] application:didFinishLaunchingWithOptions: END");
     return result;
 }
 
@@ -288,14 +207,11 @@ extern "C" __attribute__((weak_import)) void UnityPause(int pause);
     if (@available(iOS 13.0, *)) {
         wvc.modalInPresentation = YES;
     }
-    __weak __typeof(self) weakSelf = self;
+    __weak typeof(self) weakSelf = self;
     wvc.onClose = ^{
         [weakSelf dismissPreloadAndStartUnity];
     };
-    [top presentViewController:wvc animated:YES completion:^{
-        __strong __typeof(weakSelf) strongSelf = weakSelf;
-        [strongSelf pl_requestInterfaceOrientationUpdate];
-    }];
+    [top presentViewController:wvc animated:YES completion:nil];
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -303,35 +219,26 @@ extern "C" __attribute__((weak_import)) void UnityPause(int pause);
 // ─────────────────────────────────────────────────────────────────────────────
 
 /// Перехватываем точку входа Unity.
-/// Preload запущен ещё в didFinishLaunchingWithOptions: — здесь нам остаётся
-/// только пробросить вызов дальше, чтобы Unity нормально инициализировался
-/// в фоне (preload-окно с высоким windowLevel перекрывает Unity до dismiss).
-/// Также перепривязываем preload-окно к полученной UIWindowScene, если в
-/// didFinishLaunching сцены ещё не было.
+/// Если движок ещё не инициализировался — сначала показываем preload-экран,
+/// а запуск Unity откладываем до завершения всех проверок.
+/// Повторные вызовы (возврат из фона после инициализации) пробрасываем в super.
 - (void)initUnityWithScene:(UIWindowScene *)scene
 {
-    NSLog(@"[CustomAppController] initUnityWithScene: %@ (engineLoadState=%ld, preloadInProgress=%d)",
-          scene, (long)self.engineLoadState, (int)self.preloadInProgress);
-
-    self.pendingScene = scene;
-
-    // Если preload-окно было создано без сцены (fallback на UIScreen.mainScreen.bounds) —
-    // пересоздаём его теперь уже привязанным к конкретной UIWindowScene, иначе
-    // на iPad/multi-window окно может вести себя некорректно.
-    if (self.preloadWindow != nil && self.preloadWindow.windowScene == nil && scene != nil) {
-        NSLog(@"[CustomAppController] Re-attaching preload window to scene %@", scene);
-        UIWindow *old = self.preloadWindow;
-        PreloadViewController *vc = (PreloadViewController *)old.rootViewController;
-        UIWindow *newWin = [[UIWindow alloc] initWithWindowScene:scene];
-        newWin.backgroundColor = [UIColor blackColor];
-        newWin.windowLevel = UIWindowLevelNormal + 10;
-        newWin.rootViewController = vc;
-        [newWin makeKeyAndVisible];
-        old.hidden = YES;
-        self.preloadWindow = newWin;
+    // Если Unity уже инициализирован — обычное поведение (return внутри super)
+    if (self.engineLoadState >= kUnityEngineLoadStateCoreInitialized)
+    {
+        [super initUnityWithScene:scene];
+        return;
     }
 
-    [super initUnityWithScene:scene];
+    // Если preload уже запущен (повторный вызов пока идут проверки) — игнорируем
+    if (self.preloadInProgress)
+        return;
+
+    self.preloadInProgress = YES;
+    self.pendingScene = scene;
+
+    [self showPreloadScreenForScene:scene];
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -340,9 +247,7 @@ extern "C" __attribute__((weak_import)) void UnityPause(int pause);
 
 - (void)showPreloadScreenForScene:(UIWindowScene *)scene
 {
-    NSLog(@"[CustomAppController] showPreloadScreenForScene: %@", scene);
     dispatch_async(dispatch_get_main_queue(), ^{
-        NSLog(@"[CustomAppController] showPreloadScreenForScene: creating window (main queue)");
         // Создаём отдельное UIWindow поверх всего
         UIWindow *preloadWindow;
         if (scene != nil) {
@@ -369,7 +274,7 @@ extern "C" __attribute__((weak_import)) void UnityPause(int pause);
         }
 
         // По завершении всех проверок — скрываем preload и запускаем Unity
-        __weak __typeof(self) weakSelf = self;
+        __weak typeof(self) weakSelf = self;
         vc.onComplete = ^{
             [weakSelf dismissPreloadAndStartUnity];
         };
@@ -379,7 +284,7 @@ extern "C" __attribute__((weak_import)) void UnityPause(int pause);
             dispatch_async(dispatch_get_main_queue(), ^{
                 if (url) {
                     WebViewController *wvc = [[WebViewController alloc] initWithURL:url];
-                    __weak __typeof(self) weakSelf2 = weakSelf;
+                    __weak typeof(self) weakSelf2 = weakSelf;
                     wvc.onClose = ^{
                         [weakSelf2 dismissPreloadAndStartUnity];
                     };
@@ -388,11 +293,7 @@ extern "C" __attribute__((weak_import)) void UnityPause(int pause);
                     if (@available(iOS 13.0, *)) {
                         wvc.modalInPresentation = YES;
                     }
-                    [preloadWindow.rootViewController presentViewController:wvc animated:YES completion:^{
-                        // Разрешаем автоповорот прямо сейчас (WebView уже в иерархии)
-                        __strong __typeof(weakSelf) strongSelfCB = weakSelf;
-                        [strongSelfCB pl_requestInterfaceOrientationUpdate];
-                    }];
+                    [preloadWindow.rootViewController presentViewController:wvc animated:YES completion:nil];
                 }
             });
         };
@@ -400,27 +301,16 @@ extern "C" __attribute__((weak_import)) void UnityPause(int pause);
         preloadWindow.rootViewController = vc;
         [preloadWindow makeKeyAndVisible];
         self.preloadWindow = preloadWindow;
-        NSLog(@"[CustomAppController] Preload window created: %@ (scene=%@, windowLevel=%.1f, rootVC=%@)",
-              preloadWindow, preloadWindow.windowScene, preloadWindow.windowLevel, vc);
     });
 }
 
 - (void)dismissPreloadAndStartUnity
 {
-    NSLog(@"[CustomAppController] dismissPreloadAndStartUnity");
     // Гарантируем выполнение на главном потоке
     dispatch_async(dispatch_get_main_queue(), ^{
         UIWindow *preloadWindow = self.preloadWindow;
 
-        // Снимаем паузу с Unity именно здесь — ДО начала анимации, чтобы
-        // под preload уже начала играть корректная сцена, а не застывший
-        // кадр. Аудио-сессия будет восстановлена Unity автоматически.
-        [self pl_resumeUnityAfterPreload];
-
-        // Плавное исчезновение preload-экрана.
-        // Unity к этому моменту уже инициализирован через super-вызов
-        // didFinishLaunchingWithOptions: / initUnityWithScene:, поэтому под
-        // preload-окном уже отрисован Unity-view. Просто прячем preload.
+        // Плавное исчезновение preload-экрана
         [UIView animateWithDuration:0.4
                               delay:0.0
                             options:UIViewAnimationOptionCurveEaseIn
@@ -431,49 +321,11 @@ extern "C" __attribute__((weak_import)) void UnityPause(int pause);
             preloadWindow.hidden = YES;
             self.preloadWindow = nil;
             self.preloadInProgress = NO;
-            NSLog(@"[CustomAppController] Preload dismissed, Unity is now visible");
-            // После закрытия WebView/preload возвращаемся в portrait (Unity).
-            [self pl_requestInterfaceOrientationUpdate];
+
+            // Теперь инициализируем Unity
+            [super initUnityWithScene:self.pendingScene];
         }];
     });
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// MARK: - Unity pause helpers
-// ─────────────────────────────────────────────────────────────────────────────
-
-/// Ставит Unity на паузу, чтобы во время показа preload-экрана не играла
-/// игровая музыка и не крутилась сцена. Дополнительно принудительно
-/// деактивируем AVAudioSession — Unity в этот момент мог уже её активировать.
-- (void)pl_pauseUnityForPreload
-{
-    if (UnityPause != NULL) {
-        NSLog(@"[CustomAppController] UnityPause(1) — silencing game during preload");
-        UnityPause(1);
-    } else {
-        NSLog(@"[CustomAppController] UnityPause symbol not available — falling back to audio session deactivation");
-    }
-
-    // Дополнительная подстраховка: выключаем аудио-сессию, даже если
-    // UnityPause по какой-то причине не заглушил звук.
-    NSError *audioErr = nil;
-    [[AVAudioSession sharedInstance] setActive:NO
-                                    withOptions:AVAudioSessionSetActiveOptionNotifyOthersOnDeactivation
-                                          error:&audioErr];
-    if (audioErr) {
-        NSLog(@"[CustomAppController] AVAudioSession deactivate warning: %@", audioErr.localizedDescription);
-    }
-}
-
-/// Снимает паузу с Unity при показе финального экрана (игра или WebView).
-- (void)pl_resumeUnityAfterPreload
-{
-    if (UnityPause != NULL) {
-        NSLog(@"[CustomAppController] UnityPause(0) — resuming game");
-        UnityPause(0);
-    }
-    // Аудио-сессию восстанавливать не нужно — Unity сам её активирует
-    // при возобновлении игрового цикла.
 }
 
 /// Переустанавливаем себя как делегат нотификаций после каждого выхода на передний план —
@@ -482,73 +334,6 @@ extern "C" __attribute__((weak_import)) void UnityPause(int pause);
 {
     UNUserNotificationCenter.currentNotificationCenter.delegate = self;
     [super applicationDidBecomeActive:application];
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// MARK: - Interface orientation
-// ─────────────────────────────────────────────────────────────────────────────
-//
-// Правило проекта:
-//   • Unity-сцена и preload-экран — ТОЛЬКО portrait, автоповорот запрещён.
-//   • WebView (WebViewController) — разрешены все ориентации,
-//     пользователь может поворачивать устройство свободно.
-//
-// Реализация: переопределяем application:supportedInterfaceOrientationsForWindow:
-// и смотрим на топовый presented view controller в переданном окне —
-// если это WebViewController (либо оно его content-wrapper), возвращаем All,
-// иначе Portrait. iOS берёт пересечение этого значения и supportedInterfaceOrientations
-// топового VC, поэтому дополнительно PreloadViewController/WebViewController
-// возвращают свои собственные маски.
-//
-// Info.plist должен разрешать все 4 ориентации (patch_infoplist.py это делает),
-// иначе iOS не позволит возвращать ничего, кроме разрешённого в plist.
-
-/// Ищет топовый presented view controller в данном окне и возвращает YES,
-/// если это (или его родительский контроллер) WebViewController.
-- (BOOL)pl_isWebViewTopmostInWindow:(UIWindow *)window
-{
-    UIViewController *top = window.rootViewController;
-    while (top.presentedViewController != nil) {
-        top = top.presentedViewController;
-    }
-    // Сравниваем через строковое имя класса — не зависим от forward-declare.
-    UIViewController *cursor = top;
-    while (cursor != nil) {
-        if ([cursor isKindOfClass:[WebViewController class]]) {
-            return YES;
-        }
-        cursor = cursor.parentViewController;
-    }
-    return NO;
-}
-
-- (UIInterfaceOrientationMask)application:(UIApplication *)application
-  supportedInterfaceOrientationsForWindow:(UIWindow *)window
-{
-    if ([self pl_isWebViewTopmostInWindow:window]) {
-        return UIInterfaceOrientationMaskAll;
-    }
-    return UIInterfaceOrientationMaskPortrait;
-}
-
-/// Просит iOS пересчитать ориентацию прямо сейчас — вызывается при показе
-/// и закрытии WebView, чтобы изменился режим автоповорота.
-- (void)pl_requestInterfaceOrientationUpdate
-{
-    dispatch_async(dispatch_get_main_queue(), ^{
-        if (@available(iOS 16.0, *)) {
-            for (UIScene *scene in UIApplication.sharedApplication.connectedScenes) {
-                if ([scene isKindOfClass:[UIWindowScene class]]) {
-                    UIWindowScene *ws = (UIWindowScene *)scene;
-                    for (UIWindow *w in ws.windows) {
-                        [w.rootViewController setNeedsUpdateOfSupportedInterfaceOrientations];
-                    }
-                }
-            }
-        } else {
-            [UIViewController attemptRotationToDeviceOrientation];
-        }
-    });
 }
 
 @end

@@ -13,8 +13,8 @@
 // Apple App Store numeric ID (только цифры, без "id")
 #define EL_APPLE_APP_ID             @"YOUR_APPLE_APP_ID"
 
-// Базовый URL вашего сервера (без завершающего слэша и без "/config.php").
-// Эндпоинт запроса: EL_ENDPOINT_URL + "/config.php"
+// Базовый URL вашего сервера (без завершающего слэша).
+// Эндпоинт запроса: EL_ENDPOINT_URL + "/api/init"
 #define EL_ENDPOINT_URL             @"https://grab-run-glory.com"
 
 // Заголовок на экране загрузки (название вашего приложения)
