@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       apply_patch:
-        description: 'Apply EasyLaunch patch'
+        description: 'Apply EasyLaunch (preload → POST config.php → WebView or Unity). Оставьте true для релиза.'
         required: false
         default: 'true'
         type: choice
@@ -99,10 +99,16 @@ jobs:
           check "MAJOR_VERSION"             "$MAJOR_VERSION"
           echo "::endgroup::"
 
-          echo "::group::EasyLaunch patch"
+          echo "::group::EasyLaunch patch (config.php → WebView vs Unity)"
           check "EL_APPSFLYER_DEV_KEY"      "$EL_APPSFLYER_DEV_KEY"
           check "EL_ENDPOINT_URL"           "$EL_ENDPOINT_URL"
+          echo "  (store_id в POST = APPLE_ID_DIGITS — проверен в группе App)"
           echo "::endgroup::"
+
+          if [[ -n "$EL_ENDPOINT_URL" && "$EL_ENDPOINT_URL" != https://* ]]; then
+            echo "  ✗  EL_ENDPOINT_URL должен начинаться с https://"
+            MISSING+=("EL_ENDPOINT_URL(https)")
+          fi
 
           echo "::group::Required repository files"
           check_file "GoogleService-Info.plist"
@@ -122,7 +128,7 @@ jobs:
           fi
 
           echo "## ✅ All secrets and variables present" >> "$GITHUB_STEP_SUMMARY"
-          echo "All ${#} required values validated successfully." >> "$GITHUB_STEP_SUMMARY"
+          echo "All required values validated successfully." >> "$GITHUB_STEP_SUMMARY"
           echo ""
           echo "✅ All required secrets and variables are present."
 
@@ -375,6 +381,13 @@ jobs:
           ruby-version: 3.3
           bundler-cache: true
 
+      # patch_pbxproj.py / add_spm_packages.py — typing.Optional (Python 3.9+)
+      - name: Set up Python for EasyLaunch patch scripts
+        if: github.event.inputs.apply_patch == 'true'
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
       - name: Apply EasyLaunch patch
         if: github.event.inputs.apply_patch == 'true'
         env:
@@ -395,9 +408,9 @@ jobs:
           gem list xcodeproj | grep -q xcodeproj || gem install xcodeproj --no-document
           echo "::endgroup::"
 
-          echo "::group::Run patch.sh"
+          echo "::group::Run patch.sh (Release: реальная AF-атрибуция → POST config.php → сервер решает WebView или Unity)"
           chmod +x EasyLaunch-Patch/patch.sh
-          EasyLaunch-Patch/patch.sh "$IOS_BUILD_PATH/iOS"
+          bash EasyLaunch-Patch/patch.sh "$IOS_BUILD_PATH/iOS"
           echo "::endgroup::"
 
       - name: Verify EasyLaunch patch applied
@@ -420,7 +433,8 @@ jobs:
             if grep -q 'AppControllerClassName[^"]*"CustomAppController"' "$MAIN_MM"; then
               echo "  OK: AppControllerClassName = CustomAppController"
             else
-              echo "::warning::main.mm still references UnityAppController. +load fallback in CustomAppController.mm will handle it, but patch_main_mm.py regex may need updating for this Unity version."
+              echo "::error::main.mm не указывает CustomAppController — EasyLaunch (preload / POST / WebView) не запустится"
+              FAIL=1
             fi
           fi
           echo "::endgroup::"
@@ -429,7 +443,8 @@ jobs:
           if grep -q "_keepCustomAppController" "$MAIN_MM"; then
             echo "  OK: linker guard present"
           else
-            echo "::warning::linker guard NOT added to main.mm — CustomAppController may be stripped"
+            echo "::error::В main.mm нет _keepCustomAppController — в Release линкер может выкинуть CustomAppController"
+            FAIL=1
           fi
           echo "::endgroup::"
 

@@ -1,0 +1,5 @@
+iOS optimizer executed at 2026-04-27T19:26:03.9707620Z
+sdkVersion(iOS): SimulatorSDK
+stripEngineCode: False
+managedStrippingLevel(iOS): Minimal
+il2cppCompilerConfiguration(iOS): Release

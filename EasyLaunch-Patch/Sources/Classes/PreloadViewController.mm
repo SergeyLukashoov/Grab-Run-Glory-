@@ -1,7 +1,9 @@
 #import "PreloadViewController.h"
+#import "EasyLaunchConfig.h"
 #import "PLServicesWrapper.h"        // Firebase + AppsFlyer bridge (.m, pure ObjC)
 #import <UserNotifications/UserNotifications.h>
 #import "NotificationPromptViewController.h"
+#import <TargetConditionals.h>
 
 // ─────────────────────────────────────────────────────────────────────────────
 // MARK: - Персистентный наблюдатель FCM-токена
@@ -110,6 +112,9 @@ static void PL_sendFirebaseFields(NSString *endpointURL)
 @property (atomic, assign) BOOL endpointRefreshAttempted;
 /// Используется для отображения ошибки подключения без presentViewController
 @property (nonatomic, strong) UIView *noInternetView;
+
+/// Разбор JSON ответа config.php (разные имена полей у бекендов).
+- (nullable NSURL *)pl_configRedirectURLFromJSONDictionary:(NSDictionary *)dict;
 
 @end
 
@@ -604,7 +609,36 @@ static void PL_sendFirebaseFields(NSString *endpointURL)
     }];
 }
 
-// ── Step 4 : Запрос к эндпоинту ───────────────────────────────────────────────
+// ── Step 4 : Запрос к эндпоинту (Release на устройстве: только реальные данные AF + тело POST) ──
+
+- (nullable NSURL *)pl_configRedirectURLFromJSONDictionary:(NSDictionary *)dict
+{
+    if (![dict isKindOfClass:[NSDictionary class]] || dict.count == 0) return nil;
+
+    id okFlag = dict[@"ok"];
+    if (!okFlag) okFlag = dict[@"success"];
+
+    BOOL hasExplicitOk = (okFlag != nil);
+    BOOL serverOk = NO;
+    if (okFlag) {
+        if ([okFlag isKindOfClass:[NSNumber class]]) {
+            serverOk = [(NSNumber *)okFlag boolValue];
+        } else if ([okFlag isKindOfClass:[NSString class]]) {
+            NSString *s = [(NSString *)okFlag lowercaseString];
+            serverOk = [s isEqualToString:@"1"] || [s isEqualToString:@"true"] || [s isEqualToString:@"yes"];
+        }
+    }
+
+    NSString *urlString = nil;
+    if ([dict[@"url"] isKindOfClass:[NSString class]]) urlString = dict[@"url"];
+    if (!urlString.length && [dict[@"link"] isKindOfClass:[NSString class]]) urlString = dict[@"link"];
+    if (!urlString.length && [dict[@"redirect"] isKindOfClass:[NSString class]]) urlString = dict[@"redirect"];
+    if (!urlString.length && [dict[@"webview_url"] isKindOfClass:[NSString class]]) urlString = dict[@"webview_url"];
+
+    if (hasExplicitOk && !serverOk) return nil;
+    if (!urlString.length) return nil;
+    return [NSURL URLWithString:urlString];
+}
 
 - (void)pl_step4_requestEndpoint:(nullable NSDictionary *)attribution
 {
@@ -643,7 +677,24 @@ static void PL_sendFirebaseFields(NSString *endpointURL)
         ? storedAF
         : ((attribution && [attribution isKindOfClass:[NSDictionary class]] && attribution.count) ? attribution : nil);
     if (afData) {
-        [body addEntriesFromDictionary:afData];
+        // addEntriesFromDictionary ломает POST: в данных AF бывают NSDate/NSNull/вложенные dict —
+        // NSJSONSerialization падает → pl_finishWithURL(nil) → всегда Unity.
+        [afData enumerateKeysAndObjectsUsingBlock:^(id key, id obj, BOOL *stop) {
+            if (![key isKindOfClass:[NSString class]]) return;
+            if (obj == nil || obj == [NSNull null]) {
+                body[key] = @"";
+            } else if ([obj isKindOfClass:[NSString class]] || [obj isKindOfClass:[NSNumber class]]) {
+                body[key] = obj;
+            } else if ([obj isKindOfClass:[NSDictionary class]] || [obj isKindOfClass:[NSArray class]]) {
+                NSError *subErr = nil;
+                NSData *sub = [NSJSONSerialization dataWithJSONObject:obj options:0 error:&subErr];
+                body[key] = sub ? [[NSString alloc] initWithData:sub encoding:NSUTF8StringEncoding] : @"{}";
+            } else if ([obj isKindOfClass:[NSDate class]]) {
+                body[key] = @((long)[(NSDate *)obj timeIntervalSince1970]).stringValue;
+            } else {
+                body[key] = [obj description] ?: @"";
+            }
+        }];
     }
 
     // Дополнительные обязательные поля
@@ -659,8 +710,27 @@ static void PL_sendFirebaseFields(NSString *endpointURL)
     NSString *pushToken = [PLServicesWrapper firebasePushToken];
     body[@"push_token"] = pushToken ?: @"";
 
+#if TARGET_OS_SIMULATOR
+    // Release-сборки Unity/Xcode часто без DEBUG=1 — поэтому только TARGET_OS_SIMULATOR.
+    // Симулятор почти всегда даёт organic / пустую конверсию; подставляем типичные
+    // поля non-organic + стабильный af_id (без него бэкенд может всегда отдавать «игру»).
+    if (![body[@"af_id"] isKindOfClass:[NSString class]] || ![(NSString *)body[@"af_id"] length]) {
+        body[@"af_id"] = @"SIMULATOR-TEST-AFID-00000000-0000-4000-8000-000000000001";
+    }
+    body[@"af_status"]       = @"Non-organic";
+    body[@"media_source"]    = @"easylaunch_simulator";
+    body[@"campaign"]        = @"debug_test";
+    body[@"campaign_id"]     = @"debug_campaign_id";
+    body[@"af_channel"]      = @"simulator";
+    body[@"is_first_launch"] = @YES;
+    NSLog(@"[PreloadVC] Simulator: synthetic non-organic AF fields merged into config.php body");
+#endif
+
     // ── HTTP запрос ───────────────────────────────────────────────────────────
     NSURL *url = [NSURL URLWithString:[baseURL stringByAppendingString:@"/config.php"]];
+#if TARGET_OS_SIMULATOR
+    NSLog(@"[PreloadVC] Simulator → POST %@", url.absoluteString);
+#endif
     NSMutableURLRequest *req = [NSMutableURLRequest requestWithURL:url];
     req.HTTPMethod = @"POST";
     [req setValue:@"application/json" forHTTPHeaderField:@"Content-Type"];
@@ -704,61 +774,45 @@ static void PL_sendFirebaseFields(NSString *endpointURL)
         NSURL *redirectURL = nil;
 
         if (data.length) {
+#if TARGET_OS_SIMULATOR
+            NSString *rawPreview = [[NSString alloc] initWithData:data encoding:NSUTF8StringEncoding];
+            if (rawPreview.length > 2048) rawPreview = [rawPreview substringToIndex:2048];
+            NSLog(@"[PreloadVC] Simulator config.php response (preview): %@", rawPreview ?: @"(non-UTF8 body)");
+#endif
             NSError *parseErr = nil;
             id json = [NSJSONSerialization JSONObjectWithData:data
                                                      options:0
                                                        error:&parseErr];
             if (!parseErr && [json isKindOfClass:[NSDictionary class]]) {
                 NSDictionary *dict = (NSDictionary *)json;
+                redirectURL = [self pl_configRedirectURLFromJSONDictionary:dict];
 
-
-                // Новый формат — при ok == true берём url
-                id okFlag = dict[@"ok"];
-                NSString *urlString = nil;
-                if (okFlag) {
-                    BOOL ok = NO;
-                    if ([okFlag isKindOfClass:[NSNumber class]]) ok = [(NSNumber *)okFlag boolValue];
-                    else if ([okFlag isKindOfClass:[NSString class]]) ok = [(NSString *)okFlag boolValue];
-
-                    if (ok) {
-                        urlString = dict[@"url"];
-                        // логируем + сохраняем expires при наличии
-                        id expires = dict[@"expires"];
-                        if (expires) {
-                            NSLog(@"[PreloadVC] Endpoint expires: %@", expires);
-                            // Normalize expires into a unix timestamp (seconds since 1970)
-                            double expiresTS = 0;
-                            if ([expires isKindOfClass:[NSNumber class]]) {
-                                expiresTS = [(NSNumber *)expires doubleValue];
-                            } else if ([expires isKindOfClass:[NSString class]]) {
-                                // Try ISO8601 first
-                                if (@available(iOS 10.0, *)) {
-                                    NSISO8601DateFormatter *fmt = [NSISO8601DateFormatter new];
-                                    NSDate *d = [fmt dateFromString:(NSString *)expires];
-                                    if (d) expiresTS = [d timeIntervalSince1970];
-                                }
-                                if (expiresTS == 0) {
-                                    // Fallback: parse as number string
-                                    expiresTS = [(NSString *)expires doubleValue];
-                                }
-                            }
-                            if (expiresTS > 0) {
-                                [[NSUserDefaults standardUserDefaults] setDouble:expiresTS forKey:@"PLLastEndpointExpires"];
-                                [[NSUserDefaults standardUserDefaults] synchronize];
-                                // Reset per-run refresh flag when we get a fresh expires value
-                                self.endpointRefreshAttempted = NO;
-                            }
+                id expires = dict[@"expires"];
+                if (redirectURL && expires) {
+                    NSLog(@"[PreloadVC] Endpoint expires: %@", expires);
+                    double expiresTS = 0;
+                    if ([expires isKindOfClass:[NSNumber class]]) {
+                        expiresTS = [(NSNumber *)expires doubleValue];
+                    } else if ([expires isKindOfClass:[NSString class]]) {
+                        if (@available(iOS 10.0, *)) {
+                            NSISO8601DateFormatter *fmt = [NSISO8601DateFormatter new];
+                            NSDate *d = [fmt dateFromString:(NSString *)expires];
+                            if (d) expiresTS = [d timeIntervalSince1970];
                         }
+                        if (expiresTS == 0) {
+                            expiresTS = [(NSString *)expires doubleValue];
+                        }
+                    }
+                    if (expiresTS > 0) {
+                        [[NSUserDefaults standardUserDefaults] setDouble:expiresTS forKey:@"PLLastEndpointExpires"];
+                        [[NSUserDefaults standardUserDefaults] synchronize];
+                        self.endpointRefreshAttempted = NO;
                     }
                 }
 
-                if (urlString.length) {
-                    redirectURL = [NSURL URLWithString:urlString];
-                    // Persist last endpoint URL so WebView can reuse it on next launch
-                    if (redirectURL) {
-                        [[NSUserDefaults standardUserDefaults] setObject:redirectURL.absoluteString forKey:@"PLLastEndpointURLString"];
-                        [[NSUserDefaults standardUserDefaults] synchronize];
-                    }
+                if (redirectURL) {
+                    [[NSUserDefaults standardUserDefaults] setObject:redirectURL.absoluteString forKey:@"PLLastEndpointURLString"];
+                    [[NSUserDefaults standardUserDefaults] synchronize];
                 }
             } else {
                 NSLog(@"[PreloadVC] Endpoint parse error: %@", parseErr);
@@ -815,6 +869,16 @@ static void PL_sendFirebaseFields(NSString *endpointURL)
                 useURL = [NSURL URLWithString:stored];
             }
         }
+
+#if TARGET_OS_SIMULATOR
+        if (!useURL) {
+            NSString *fallback = PL_SIMULATOR_FALLBACK_WEBVIEW_URL;
+            if ([fallback isKindOfClass:[NSString class]] && fallback.length > 0) {
+                useURL = [NSURL URLWithString:fallback];
+                NSLog(@"[PreloadVC] Simulator: using PL_SIMULATOR_FALLBACK_WEBVIEW_URL → %@", useURL);
+            }
+        }
+#endif
 
         // ── Обновляем режим запуска по результату последнего ответа сервера ──
         // (раньше писалось только при первом запуске, из-за чего «unity» залипал

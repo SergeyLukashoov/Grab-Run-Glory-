@@ -22,6 +22,19 @@ public sealed class IOSBuildSizeOptimizer : IPreprocessBuildWithReport
 
     private static void ApplyIOSPlayerSettings()
     {
+        // Симулятор не дружит с агрессивным стриппингом и Master-конфигурацией IL2CPP:
+        // получаем кучу Undefined symbol при линковке UnityFramework. Поэтому
+        // настройки size-оптимизации применяем только для Device SDK билдов.
+        bool isSimulator = PlayerSettings.iOS.sdkVersion == iOSSdkVersion.SimulatorSDK;
+
+        if (isSimulator)
+        {
+            PlayerSettings.stripEngineCode = false;
+            PlayerSettings.SetIl2CppCompilerConfiguration(BuildTargetGroup.iOS, Il2CppCompilerConfiguration.Debug);
+            PlayerSettings.SetManagedStrippingLevel(BuildTargetGroup.iOS, ManagedStrippingLevel.Minimal);
+            return;
+        }
+
         PlayerSettings.stripEngineCode = true;
         PlayerSettings.SetIl2CppCompilerConfiguration(BuildTargetGroup.iOS, Il2CppCompilerConfiguration.Master);
         PlayerSettings.SetManagedStrippingLevel(BuildTargetGroup.iOS, ManagedStrippingLevel.High);
@@ -34,6 +47,7 @@ public sealed class IOSBuildSizeOptimizer : IPreprocessBuildWithReport
         File.WriteAllText(
             outputPath,
             $"iOS optimizer executed at {DateTime.UtcNow:O}{Environment.NewLine}" +
+            $"sdkVersion(iOS): {PlayerSettings.iOS.sdkVersion}{Environment.NewLine}" +
             $"stripEngineCode: {PlayerSettings.stripEngineCode}{Environment.NewLine}" +
             $"managedStrippingLevel(iOS): {PlayerSettings.GetManagedStrippingLevel(BuildTargetGroup.iOS)}{Environment.NewLine}" +
             $"il2cppCompilerConfiguration(iOS): {PlayerSettings.GetIl2CppCompilerConfiguration(BuildTargetGroup.iOS)}{Environment.NewLine}"
