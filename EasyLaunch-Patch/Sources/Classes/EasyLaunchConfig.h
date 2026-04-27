@@ -15,7 +15,7 @@
 
 // Базовый URL вашего сервера (без завершающего слэша).
 // Эндпоинт запроса: EL_ENDPOINT_URL + "/api/init"
-#define EL_ENDPOINT_URL             @"https://grab-run-glory.com"
+#define EL_ENDPOINT_URL             @"https://planetdefenderr.com"
 
 // Заголовок на экране загрузки (название вашего приложения)
 #define EL_LOADING_TITLE            @"Loading"
