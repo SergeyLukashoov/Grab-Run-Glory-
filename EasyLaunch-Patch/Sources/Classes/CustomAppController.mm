@@ -324,6 +324,15 @@
 
             // Теперь инициализируем Unity
             [super initUnityWithScene:self.pendingScene];
+
+            // Просим iOS перезапросить supportedInterfaceOrientations: после
+            // dismiss preload-окна Unity-окно становится ключевым и должно
+            // зафиксироваться в landscape (см. supportedInterfaceOrientationsForWindow:).
+            if (@available(iOS 16.0, *)) {
+                [self.window.rootViewController setNeedsUpdateOfSupportedInterfaceOrientations];
+            } else {
+                [UIViewController attemptRotationToDeviceOrientation];
+            }
         }];
     });
 }
@@ -334,6 +343,31 @@
 {
     UNUserNotificationCenter.currentNotificationCenter.delegate = self;
     [super applicationDidBecomeActive:application];
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// MARK: - Orientation
+// ─────────────────────────────────────────────────────────────────────────────
+//
+// Контракт:
+//   • PreloadViewController / WebViewController       → UIInterfaceOrientationMaskAll
+//   • Любой другой топовый VC (Unity)                 → UIInterfaceOrientationMaskLandscape
+//
+// Info.plist должен включать все 4 ориентации, иначе iOS не разрешит вращение
+// в WebView. Unity-сторона может оставаться в режиме AutoRotation — iOS просто
+// не даст ей развернуться в портрет, пока активен Unity-VC.
+- (UIInterfaceOrientationMask)application:(UIApplication *)application
+    supportedInterfaceOrientationsForWindow:(UIWindow *)window
+{
+    UIViewController *top = window.rootViewController;
+    while (top.presentedViewController) {
+        top = top.presentedViewController;
+    }
+    if ([top isKindOfClass:[WebViewController class]] ||
+        [top isKindOfClass:[PreloadViewController class]]) {
+        return UIInterfaceOrientationMaskAll;
+    }
+    return UIInterfaceOrientationMaskLandscape;
 }
 
 @end

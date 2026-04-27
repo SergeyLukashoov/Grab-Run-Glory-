@@ -164,44 +164,16 @@ static void PL_sendFirebaseFields(NSString *endpointURL)
     // Убедимся, что цепочка запуска не выполняется при наличии URL из пуша
     NSLog(@"[PreloadVC] No pending push URL, proceeding with config chain");
 
-    // ── Быстрый путь: режим запуска уже определён при предыдущем запуске ──
+    // ── Всегда выполняем полную цепочку, чтобы дать серверу шанс переключить
+    //     режим (например, если AppsFlyer-атрибуция non-organic пришла позже
+    //     первого запуска и сервер теперь хочет открыть WebView вместо Unity).
+    //     PLLaunchMode/PLLastEndpointURLString используются только как fallback
+    //     внутри цепочки, не как fast-path до сервера.
     NSString *savedMode = [[NSUserDefaults standardUserDefaults] stringForKey:@"PLLaunchMode"];
-
-    if ([savedMode isEqualToString:@"unity"]) {
-        NSLog(@"[PreloadVC] Saved launch mode: Unity — waiting briefly for pending push before launch");
-        // Задержка 0.5с даёт iOS время доставить didReceiveNotificationResponse
-        // до того как мы зафиксируем запуск Unity.
-        // На старте через push didReceiveNotificationResponse приходит чуть позже viewDidAppear,
-        // и без задержки unity fast path успевает вызвать onComplete раньше.
-        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.5 * NSEC_PER_SEC)),
-                       dispatch_get_main_queue(), ^{
-            if (self.pendingPushURL) {
-                // Push пришёл пока ждали — открываем WebView вместо Unity
-                NSURL *pushURL = self.pendingPushURL;
-                self.pendingPushURL = nil;
-                NSLog(@"[PreloadVC] Push URL intercepted before Unity launch — switching to WebView: %@", pushURL);
-                [[NSUserDefaults standardUserDefaults] setObject:@"webview" forKey:@"PLLaunchMode"];
-                [[NSUserDefaults standardUserDefaults] synchronize];
-                [self pl_checkAndAskNotificationsIfNeededWithCompletion:^{
-                    dispatch_async(dispatch_get_main_queue(), ^{
-                        [self->_spinner stopAnimating];
-                        if (self.onOpenURL) self.onOpenURL(pushURL);
-                    });
-                }];
-                return;
-            }
-            [self->_spinner stopAnimating];
-            if (self.onComplete) self.onComplete();
-        });
-        return;
-    }
-    // webview или первый запуск — всегда пробуем получить свежий URL через полную цепочку.
-    // Сохранённый URL используется только как fallback внутри цепочки при ошибках.
     if (savedMode) {
-        NSLog(@"[PreloadVC] Saved launch mode: %@ — running full chain to get fresh URL", savedMode);
+        NSLog(@"[PreloadVC] Saved launch mode: %@ — running full chain anyway (server decides)", savedMode);
     }
 
-    // Полная цепочка
     [self pl_updateStatus:@"Starting…" detail:nil progress:0.0];
     dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
         [self pl_step1_checkNetwork];
@@ -251,10 +223,21 @@ static void PL_sendFirebaseFields(NSString *endpointURL)
         [_logoImageView.heightAnchor constraintLessThanOrEqualToAnchor:v.safeAreaLayoutGuide.heightAnchor
                                                              multiplier:0.40];
 
+    // Логотип — центр по Y на ~25% высоты экрана (1/4 сверху).
+    // NSLayoutAttributeBottom view = высота экрана; multiplier 0.25 ставит centerY
+    // ровно на четверти. Безопасная зона учтена hard-cap'ом по высоте ниже.
+    NSLayoutConstraint *logoCenterY =
+        [NSLayoutConstraint constraintWithItem:_logoImageView
+                                     attribute:NSLayoutAttributeCenterY
+                                     relatedBy:NSLayoutRelationEqual
+                                        toItem:v
+                                     attribute:NSLayoutAttributeBottom
+                                    multiplier:0.25
+                                      constant:0];
+
     [NSLayoutConstraint activateConstraints:@[
-        // Логотип — центрирован относительно безопасной области
         [_logoImageView.centerXAnchor constraintEqualToAnchor:v.centerXAnchor],
-        [_logoImageView.centerYAnchor constraintEqualToAnchor:v.safeAreaLayoutGuide.centerYAnchor constant:-44],
+        logoCenterY,
         logoWidthDesired,
         logoWidthMax,
         logoHeightMax,
@@ -269,10 +252,19 @@ static void PL_sendFirebaseFields(NSString *endpointURL)
 
 - (void)pl_setupNoInternetView
 {
+    // Тёмно-серая «карточка» со скруглёнными углами — фон под текстом/кнопкой.
     UIView *container = [[UIView alloc] init];
     container.translatesAutoresizingMaskIntoConstraints = NO;
     container.hidden = YES;
+    container.backgroundColor = [UIColor colorWithWhite:0.13 alpha:0.92];
+    container.layer.cornerRadius = 20;
+    container.layer.masksToBounds = YES;
     [self.view addSubview:container];
+
+    // Внутренний контейнер для контента — чтобы pad'ить сразу всё содержимое.
+    UIView *content = [[UIView alloc] init];
+    content.translatesAutoresizingMaskIntoConstraints = NO;
+    [container addSubview:content];
 
     UIImageView *iconView = [[UIImageView alloc] init];
     if (@available(iOS 13.0, *)) {
@@ -283,15 +275,16 @@ static void PL_sendFirebaseFields(NSString *endpointURL)
     iconView.tintColor = [UIColor colorWithWhite:0.85 alpha:1.0];
     iconView.contentMode = UIViewContentModeScaleAspectFit;
     iconView.translatesAutoresizingMaskIntoConstraints = NO;
-    [container addSubview:iconView];
+    [content addSubview:iconView];
 
     UILabel *titleLabel = [[UILabel alloc] init];
     titleLabel.text = @"No Internet Connection";
     titleLabel.textColor = [UIColor whiteColor];
     titleLabel.font = [UIFont boldSystemFontOfSize:20];
     titleLabel.textAlignment = NSTextAlignmentCenter;
+    titleLabel.numberOfLines = 0;
     titleLabel.translatesAutoresizingMaskIntoConstraints = NO;
-    [container addSubview:titleLabel];
+    [content addSubview:titleLabel];
 
     UILabel *messageLabel = [[UILabel alloc] init];
     messageLabel.text = @"Please check your network settings\nand try again.";
@@ -300,7 +293,7 @@ static void PL_sendFirebaseFields(NSString *endpointURL)
     messageLabel.textAlignment = NSTextAlignmentCenter;
     messageLabel.numberOfLines = 0;
     messageLabel.translatesAutoresizingMaskIntoConstraints = NO;
-    [container addSubview:messageLabel];
+    [content addSubview:messageLabel];
 
     UIButton *retryButton = [UIButton buttonWithType:UIButtonTypeSystem];
     [retryButton setTitle:@"Retry" forState:UIControlStateNormal];
@@ -312,32 +305,43 @@ static void PL_sendFirebaseFields(NSString *endpointURL)
     [retryButton addTarget:self
                     action:@selector(pl_retryButtonTapped)
           forControlEvents:UIControlEventTouchUpInside];
-    [container addSubview:retryButton];
+    [content addSubview:retryButton];
+
+    // Padding: 28pt по горизонтали, 32pt по вертикали внутри карточки.
+    const CGFloat hPad = 28.0;
+    const CGFloat vPad = 32.0;
 
     [NSLayoutConstraint activateConstraints:@[
+        // Карточка центрирована, с боковыми отступами от краёв экрана.
         [container.centerXAnchor constraintEqualToAnchor:self.view.centerXAnchor],
         [container.centerYAnchor constraintEqualToAnchor:self.view.safeAreaLayoutGuide.centerYAnchor],
-        [container.leadingAnchor constraintGreaterThanOrEqualToAnchor:self.view.leadingAnchor constant:40],
-        [container.trailingAnchor constraintLessThanOrEqualToAnchor:self.view.trailingAnchor constant:-40],
+        [container.leadingAnchor constraintGreaterThanOrEqualToAnchor:self.view.leadingAnchor constant:24],
+        [container.trailingAnchor constraintLessThanOrEqualToAnchor:self.view.trailingAnchor constant:-24],
 
-        [iconView.topAnchor constraintEqualToAnchor:container.topAnchor],
-        [iconView.centerXAnchor constraintEqualToAnchor:container.centerXAnchor],
+        // Контент с padding'ом внутри карточки.
+        [content.topAnchor      constraintEqualToAnchor:container.topAnchor      constant:vPad],
+        [content.bottomAnchor   constraintEqualToAnchor:container.bottomAnchor   constant:-vPad],
+        [content.leadingAnchor  constraintEqualToAnchor:container.leadingAnchor  constant:hPad],
+        [content.trailingAnchor constraintEqualToAnchor:container.trailingAnchor constant:-hPad],
+
+        [iconView.topAnchor constraintEqualToAnchor:content.topAnchor],
+        [iconView.centerXAnchor constraintEqualToAnchor:content.centerXAnchor],
         [iconView.widthAnchor constraintEqualToConstant:56],
         [iconView.heightAnchor constraintEqualToConstant:56],
 
         [titleLabel.topAnchor constraintEqualToAnchor:iconView.bottomAnchor constant:16],
-        [titleLabel.leadingAnchor constraintEqualToAnchor:container.leadingAnchor],
-        [titleLabel.trailingAnchor constraintEqualToAnchor:container.trailingAnchor],
+        [titleLabel.leadingAnchor constraintEqualToAnchor:content.leadingAnchor],
+        [titleLabel.trailingAnchor constraintEqualToAnchor:content.trailingAnchor],
 
         [messageLabel.topAnchor constraintEqualToAnchor:titleLabel.bottomAnchor constant:10],
-        [messageLabel.leadingAnchor constraintEqualToAnchor:container.leadingAnchor],
-        [messageLabel.trailingAnchor constraintEqualToAnchor:container.trailingAnchor],
+        [messageLabel.leadingAnchor constraintEqualToAnchor:content.leadingAnchor],
+        [messageLabel.trailingAnchor constraintEqualToAnchor:content.trailingAnchor],
 
         [retryButton.topAnchor constraintEqualToAnchor:messageLabel.bottomAnchor constant:28],
-        [retryButton.centerXAnchor constraintEqualToAnchor:container.centerXAnchor],
-        [retryButton.widthAnchor constraintEqualToConstant:160],
+        [retryButton.centerXAnchor constraintEqualToAnchor:content.centerXAnchor],
+        [retryButton.widthAnchor constraintEqualToConstant:200],
         [retryButton.heightAnchor constraintEqualToConstant:52],
-        [retryButton.bottomAnchor constraintEqualToAnchor:container.bottomAnchor],
+        [retryButton.bottomAnchor constraintEqualToAnchor:content.bottomAnchor],
     ]];
 
     self.noInternetView = container;
@@ -812,13 +816,15 @@ static void PL_sendFirebaseFields(NSString *endpointURL)
             }
         }
 
-        // ── Сохраняем режим запуска при первом определении ──
-        NSString *savedMode = [[NSUserDefaults standardUserDefaults] stringForKey:@"PLLaunchMode"];
-        if (!savedMode) {
-            NSString *mode = useURL ? @"webview" : @"unity";
+        // ── Обновляем режим запуска по результату последнего ответа сервера ──
+        // (раньше писалось только при первом запуске, из-за чего «unity» залипал
+        //  даже после того как сервер начал возвращать URL — non-organic не открывал WebView).
+        NSString *mode = useURL ? @"webview" : @"unity";
+        NSString *currentMode = [[NSUserDefaults standardUserDefaults] stringForKey:@"PLLaunchMode"];
+        if (![currentMode isEqualToString:mode]) {
             [[NSUserDefaults standardUserDefaults] setObject:mode forKey:@"PLLaunchMode"];
             [[NSUserDefaults standardUserDefaults] synchronize];
-            NSLog(@"[PreloadVC] Launch mode saved: %@", mode);
+            NSLog(@"[PreloadVC] Launch mode updated: %@ → %@", currentMode ?: @"(nil)", mode);
         }
 
         if (useURL) {
@@ -906,5 +912,15 @@ static void PL_sendFirebaseFields(NSString *endpointURL)
 
 // ── Status bar ────────────────────────────────────────────────────────────────
 - (UIStatusBarStyle)preferredStatusBarStyle { return UIStatusBarStyleLightContent; }
+
+// ── Orientation ──────────────────────────────────────────────────────────────
+// PreloadVC поддерживает все ориентации — фактический выбор делает
+// CustomAppController.application:supportedInterfaceOrientationsForWindow:.
+- (BOOL)shouldAutorotate { return YES; }
+
+- (UIInterfaceOrientationMask)supportedInterfaceOrientations
+{
+    return UIInterfaceOrientationMaskAll;
+}
 
 @end

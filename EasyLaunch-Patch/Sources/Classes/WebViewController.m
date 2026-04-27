@@ -178,6 +178,15 @@
     // Close action intentionally left empty — controller is non-dismissible.
 }
 
+#pragma mark - Orientation
+
+- (BOOL)shouldAutorotate { return YES; }
+
+- (UIInterfaceOrientationMask)supportedInterfaceOrientations
+{
+    return UIInterfaceOrientationMaskAll;
+}
+
 #pragma mark - WKNavigationDelegate
 - (void)webView:(WKWebView *)webView didFailNavigation:(WKNavigation *)navigation withError:(NSError *)error
 {
