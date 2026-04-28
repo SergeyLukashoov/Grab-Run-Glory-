@@ -1,10 +1,9 @@
 #!/usr/bin/env bash
 # =============================================================================
 # EasyLaunch patch.sh
-# — После каждого экспорта Unity → iOS запускать на папке с Classes/ и .xcodeproj.
-# — CI: macOS job пишет easylaunch.config и вызывает этот скрипт.
-# — Release на устройстве: POST с реальной AppsFlyer-атрибуцией; WebView vs Unity решает сервер.
-# — Симулятор: PreloadViewController подмешивает тестовые non-organic поля (см. TARGET_OS_SIMULATOR).
+# =============================================================================
+# Патчит Unity-сгенерированный Xcode-проект: добавляет кастомный preload-экран
+# с Firebase, AppsFlyer и WebView-редиректом.
 #
 # Использование:
 #   ./patch.sh <путь к Xcode-проекту>
@@ -83,6 +82,8 @@ declare -a PATCH_FILES=(
     "WebViewConfig.m"
     "NotificationPromptViewController.h"
     "NotificationPromptViewController.m"
+    "ScreenCaptureBlocker.h"
+    "ScreenCaptureBlocker.m"
 )
 
 # Дополнительные ресурсы (изображения и plist)
@@ -94,19 +95,18 @@ PATCH_FILES+=(
 
 # ── Загрузка конфига ──────────────────────────────────────────────────────────
 CONFIG_FILE="$SCRIPT_DIR/easylaunch.config"
-# Дефолты, если переменные не заданы извне (CI) и нет easylaunch.config
-: "${EL_APPSFLYER_DEV_KEY:=YOUR_APPSFLYER_DEV_KEY}"
-: "${EL_APPLE_APP_ID:=YOUR_APPLE_APP_ID}"
-: "${EL_ENDPOINT_URL:=https://grab-run-glory.com}"
-: "${EL_LOADING_TITLE:=Loading}"
+EL_APPSFLYER_DEV_KEY="YOUR_APPSFLYER_DEV_KEY"
+EL_APPLE_APP_ID="YOUR_APPLE_APP_ID"
+EL_ENDPOINT_URL="https://your-server.com"
+EL_LOADING_TITLE="Loading"
 
 if [[ -f "$CONFIG_FILE" ]]; then
     info "Загрузка конфигурации из easylaunch.config …"
     # shellcheck source=/dev/null
     source "$CONFIG_FILE"
 else
-    warn "easylaunch.config не найден — берутся значения выше (или из окружения)."
-    warn "Для продакшена: easylaunch.config.example → easylaunch.config"
+    warn "easylaunch.config не найден — используются placeholder-значения."
+    warn "Скопируйте easylaunch.config.example → easylaunch.config и заполните ключи."
 fi
 
 # =============================================================================

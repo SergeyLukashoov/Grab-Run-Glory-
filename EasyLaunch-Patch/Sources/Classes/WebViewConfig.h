@@ -4,7 +4,6 @@
 NS_ASSUME_NONNULL_BEGIN
 
 // Простая конфигурация для WebView — вынесена в отдельный файл
-FOUNDATION_EXPORT BOOL const WebViewConfigShowCloseButton;
 FOUNDATION_EXPORT NSTimeInterval const WebViewConfigNavigationTimeout;
 FOUNDATION_EXPORT UIColor *WebViewConfigTintColor(void);
 

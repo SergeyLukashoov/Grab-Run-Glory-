@@ -19,7 +19,6 @@ import sys
 import re
 import os
 import hashlib
-from typing import Optional
 
 # ──────────────────────────────────────────────────────────────────────────────
 # Набор файлов патча (используется если аргументы не переданы)
@@ -38,6 +37,8 @@ DEFAULT_PATCH_FILES = [
     "WebViewConfig.m",
     "NotificationPromptViewController.h",
     "NotificationPromptViewController.m",
+    "ScreenCaptureBlocker.h",
+    "ScreenCaptureBlocker.m",
 ]
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -95,7 +96,7 @@ def is_resource(name: str) -> bool:
     )
 
 
-def _find_main_group_uuid(content: str) -> Optional[str]:
+def _find_main_group_uuid(content: str) -> str | None:
     """Возвращает UUID mainGroup из PBXProject или None, если не найден."""
     m = re.search(r'mainGroup\s*=\s*([0-9A-Fa-f]{24})\s*;', content)
     if m:
@@ -103,7 +104,7 @@ def _find_main_group_uuid(content: str) -> Optional[str]:
     return None
 
 
-def _find_file_ref_uuid(content: str, filename: str) -> Optional[str]:
+def _find_file_ref_uuid(content: str, filename: str) -> str | None:
     """Возвращает UUID существующего PBXFileReference для filename, или None."""
     m = re.search(
         rf'([0-9A-Fa-f]{{24}}) /\* {re.escape(filename)} \*/ = \{{isa = PBXFileReference',
@@ -112,7 +113,7 @@ def _find_file_ref_uuid(content: str, filename: str) -> Optional[str]:
     return m.group(1).upper() if m else None
 
 
-def _find_unityframework_frameworks_phase(content: str) -> Optional[str]:
+def _find_unityframework_frameworks_phase(content: str) -> str | None:
     """
     Возвращает UUID секции PBXFrameworksBuildPhase, принадлежащей
     таргету UnityFramework, или None если не найдено.
@@ -239,7 +240,7 @@ def patch_link_frameworks(pbxproj_path: str, frameworks: list = None) -> None:
         print(f"    ✓  {fw['name']}")
 
 
-def _find_unityiphone_resources_phase(content: str, target_name: str = 'Unity-iPhone') -> Optional[str]:
+def _find_unityiphone_resources_phase(content: str, target_name: str = 'Unity-iPhone') -> str | None:
     targ_m = re.search(
         rf'/\* {re.escape(target_name)} \*/ = \{{[^}}]*?isa = PBXNativeTarget;.*?buildPhases = \((.*?)\);',
         content, re.DOTALL

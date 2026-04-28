@@ -1,5 +1,6 @@
 #import "WebViewController.h"
 #import "WebViewConfig.h"
+#import "ScreenCaptureBlocker.h"
 #import <WebKit/WebKit.h>
 
 @interface WebViewController () <WKNavigationDelegate, WKUIDelegate, UIGestureRecognizerDelegate, NSURLSessionDataDelegate, UIScrollViewDelegate>
@@ -156,6 +157,14 @@
     }
 }
 
+- (void)viewDidAppear:(BOOL)animated
+{
+    [super viewDidAppear:animated];
+    // Применяем защиту от захвата экрана после того, как view добавлена в окно.
+    // Метод CALayer-swap требует, чтобы view уже была в иерархии.
+    //[ScreenCaptureBlocker applyProtectionToLayer:self.webView.layer];
+}
+
 - (void)dealloc
 {
     [self.webView.scrollView removeObserver:self forKeyPath:@"zoomScale" context:NULL];
@@ -176,15 +185,6 @@
 - (void)onCloseTapped
 {
     // Close action intentionally left empty — controller is non-dismissible.
-}
-
-#pragma mark - Orientation
-
-- (BOOL)shouldAutorotate { return YES; }
-
-- (UIInterfaceOrientationMask)supportedInterfaceOrientations
-{
-    return UIInterfaceOrientationMaskAll;
 }
 
 #pragma mark - WKNavigationDelegate
@@ -232,10 +232,23 @@
 {
     NSURL *requestURL = navigationAction.request.URL;
 
+    // Sub-frame navigations (iframes etc.) — allow them through without interference.
+    // Must be checked first so that blob:/about:/data: URLs used by game launchers inside
+    // iframes are never intercepted or sent to UIApplication.
+    // Target-blank / new-window requests are handled by createWebViewWithConfiguration:.
+    if (navigationAction.targetFrame && !navigationAction.targetFrame.isMainFrame) {
+        decisionHandler(WKNavigationActionPolicyAllow);
+        return;
+    }
+
     // Open non-http(s) URLs (deeplinks, tel:, mailto:, custom schemes, etc.) via the system.
+    // Exclude blob:, about:, data: — WebKit must handle these natively; UIApplication cannot.
     if (requestURL) {
         NSString *scheme = requestURL.scheme.lowercaseString;
-        if (scheme && ![scheme isEqualToString:@"http"] && ![scheme isEqualToString:@"https"]) {
+        BOOL isWebKitInternal = [scheme isEqualToString:@"blob"] ||
+                                [scheme isEqualToString:@"about"] ||
+                                [scheme isEqualToString:@"data"];
+        if (scheme && ![scheme isEqualToString:@"http"] && ![scheme isEqualToString:@"https"] && !isWebKitInternal) {
             if (@available(iOS 10.0, *)) {
                 [[UIApplication sharedApplication] openURL:requestURL options:@{} completionHandler:nil];
             } else {
@@ -244,13 +257,6 @@
             decisionHandler(WKNavigationActionPolicyCancel);
             return;
         }
-    }
-
-    // Sub-frame navigations (iframes etc.) — allow them through without interference.
-    // Target-blank / new-window requests are handled by createWebViewWithConfiguration:.
-    if (navigationAction.targetFrame && !navigationAction.targetFrame.isMainFrame) {
-        decisionHandler(WKNavigationActionPolicyAllow);
-        return;
     }
 
     // Navigation with no frame (window.open / target="_blank") that wasn't caught

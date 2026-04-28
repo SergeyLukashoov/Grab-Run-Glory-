@@ -1,9 +1,7 @@
 #import "PreloadViewController.h"
-#import "EasyLaunchConfig.h"
 #import "PLServicesWrapper.h"        // Firebase + AppsFlyer bridge (.m, pure ObjC)
 #import <UserNotifications/UserNotifications.h>
 #import "NotificationPromptViewController.h"
-#import <TargetConditionals.h>
 
 // ─────────────────────────────────────────────────────────────────────────────
 // MARK: - Персистентный наблюдатель FCM-токена
@@ -112,9 +110,8 @@ static void PL_sendFirebaseFields(NSString *endpointURL)
 @property (atomic, assign) BOOL endpointRefreshAttempted;
 /// Используется для отображения ошибки подключения без presentViewController
 @property (nonatomic, strong) UIView *noInternetView;
-
-/// Разбор JSON ответа config.php (разные имена полей у бекендов).
-- (nullable NSURL *)pl_configRedirectURLFromJSONDictionary:(NSDictionary *)dict;
+/// Полупрозрачный тёмный оверлей за экраном «Нет интернета»
+@property (nonatomic, strong) UIView *noInternetOverlay;
 
 @end
 
@@ -152,7 +149,7 @@ static void PL_sendFirebaseFields(NSString *endpointURL)
 {
     self.attributionData = nil;
     self.noInternetView.hidden = YES;
-    [_spinner startAnimating];
+    self.noInternetOverlay.hidden = YES;
 
     // ── Push-путь: приложение открыто тапом по уведомлению с URL ──────────────
     if (self.pendingPushURL) {
@@ -169,17 +166,44 @@ static void PL_sendFirebaseFields(NSString *endpointURL)
     // Убедимся, что цепочка запуска не выполняется при наличии URL из пуша
     NSLog(@"[PreloadVC] No pending push URL, proceeding with config chain");
 
-    // ── Всегда выполняем полную цепочку, чтобы дать серверу шанс переключить
-    //     режим (например, если AppsFlyer-атрибуция non-organic пришла позже
-    //     первого запуска и сервер теперь хочет открыть WebView вместо Unity).
-    //     PLLaunchMode/PLLastEndpointURLString используются только как fallback
-    //     внутри цепочки, не как fast-path до сервера.
+    // ── Быстрый путь: режим запуска уже определён при предыдущем запуске ──
     NSString *savedMode = [[NSUserDefaults standardUserDefaults] stringForKey:@"PLLaunchMode"];
+
+    if ([savedMode isEqualToString:@"unity"]) {
+        NSLog(@"[PreloadVC] Saved launch mode: Unity — waiting briefly for pending push before launch");
+        // Задержка 0.5с даёт iOS время доставить didReceiveNotificationResponse
+        // до того как мы зафиксируем запуск Unity.
+        // На старте через push didReceiveNotificationResponse приходит чуть позже viewDidAppear,
+        // и без задержки unity fast path успевает вызвать onComplete раньше.
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.5 * NSEC_PER_SEC)),
+                       dispatch_get_main_queue(), ^{
+            if (self.pendingPushURL) {
+                // Push пришёл пока ждали — открываем WebView вместо Unity
+                NSURL *pushURL = self.pendingPushURL;
+                self.pendingPushURL = nil;
+                NSLog(@"[PreloadVC] Push URL intercepted before Unity launch — switching to WebView: %@", pushURL);
+                [[NSUserDefaults standardUserDefaults] setObject:@"webview" forKey:@"PLLaunchMode"];
+                [[NSUserDefaults standardUserDefaults] synchronize];
+                [self pl_checkAndAskNotificationsIfNeededWithCompletion:^{
+                    dispatch_async(dispatch_get_main_queue(), ^{
+                        [self->_spinner stopAnimating];
+                        if (self.onOpenURL) self.onOpenURL(pushURL);
+                    });
+                }];
+                return;
+            }
+            [self->_spinner stopAnimating];
+            if (self.onComplete) self.onComplete();
+        });
+        return;
+    }
+    // webview или первый запуск — всегда пробуем получить свежий URL через полную цепочку.
+    // Сохранённый URL используется только как fallback внутри цепочки при ошибках.
     if (savedMode) {
-        NSLog(@"[PreloadVC] Saved launch mode: %@ — running full chain anyway (server decides)", savedMode);
+        NSLog(@"[PreloadVC] Saved launch mode: %@ — running full chain to get fresh URL", savedMode);
     }
 
-    [self pl_updateStatus:@"Starting…" detail:nil progress:0.0];
+    // Полная цепочка    
     dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
         [self pl_step1_checkNetwork];
     });
@@ -228,21 +252,10 @@ static void PL_sendFirebaseFields(NSString *endpointURL)
         [_logoImageView.heightAnchor constraintLessThanOrEqualToAnchor:v.safeAreaLayoutGuide.heightAnchor
                                                              multiplier:0.40];
 
-    // Логотип — центр по Y на ~25% высоты экрана (1/4 сверху).
-    // NSLayoutAttributeBottom view = высота экрана; multiplier 0.25 ставит centerY
-    // ровно на четверти. Безопасная зона учтена hard-cap'ом по высоте ниже.
-    NSLayoutConstraint *logoCenterY =
-        [NSLayoutConstraint constraintWithItem:_logoImageView
-                                     attribute:NSLayoutAttributeCenterY
-                                     relatedBy:NSLayoutRelationEqual
-                                        toItem:v
-                                     attribute:NSLayoutAttributeBottom
-                                    multiplier:0.25
-                                      constant:0];
-
     [NSLayoutConstraint activateConstraints:@[
+        // Логотип — центрирован относительно безопасной области
         [_logoImageView.centerXAnchor constraintEqualToAnchor:v.centerXAnchor],
-        logoCenterY,
+        [_logoImageView.centerYAnchor constraintEqualToAnchor:v.safeAreaLayoutGuide.centerYAnchor constant:-44],
         logoWidthDesired,
         logoWidthMax,
         logoHeightMax,
@@ -257,19 +270,24 @@ static void PL_sendFirebaseFields(NSString *endpointURL)
 
 - (void)pl_setupNoInternetView
 {
-    // Тёмно-серая «карточка» со скруглёнными углами — фон под текстом/кнопкой.
+    // Полупрозрачный тёмный фон
+    UIView *overlay = [[UIView alloc] init];
+    overlay.translatesAutoresizingMaskIntoConstraints = NO;
+    overlay.backgroundColor = [UIColor colorWithWhite:0.0 alpha:0.65];
+    overlay.hidden = YES;
+    [self.view addSubview:overlay];
+
+    [NSLayoutConstraint activateConstraints:@[
+        [overlay.topAnchor constraintEqualToAnchor:self.view.topAnchor],
+        [overlay.bottomAnchor constraintEqualToAnchor:self.view.bottomAnchor],
+        [overlay.leadingAnchor constraintEqualToAnchor:self.view.leadingAnchor],
+        [overlay.trailingAnchor constraintEqualToAnchor:self.view.trailingAnchor],
+    ]];
+
     UIView *container = [[UIView alloc] init];
     container.translatesAutoresizingMaskIntoConstraints = NO;
     container.hidden = YES;
-    container.backgroundColor = [UIColor colorWithWhite:0.13 alpha:0.92];
-    container.layer.cornerRadius = 20;
-    container.layer.masksToBounds = YES;
     [self.view addSubview:container];
-
-    // Внутренний контейнер для контента — чтобы pad'ить сразу всё содержимое.
-    UIView *content = [[UIView alloc] init];
-    content.translatesAutoresizingMaskIntoConstraints = NO;
-    [container addSubview:content];
 
     UIImageView *iconView = [[UIImageView alloc] init];
     if (@available(iOS 13.0, *)) {
@@ -280,16 +298,15 @@ static void PL_sendFirebaseFields(NSString *endpointURL)
     iconView.tintColor = [UIColor colorWithWhite:0.85 alpha:1.0];
     iconView.contentMode = UIViewContentModeScaleAspectFit;
     iconView.translatesAutoresizingMaskIntoConstraints = NO;
-    [content addSubview:iconView];
+    [container addSubview:iconView];
 
     UILabel *titleLabel = [[UILabel alloc] init];
     titleLabel.text = @"No Internet Connection";
     titleLabel.textColor = [UIColor whiteColor];
     titleLabel.font = [UIFont boldSystemFontOfSize:20];
     titleLabel.textAlignment = NSTextAlignmentCenter;
-    titleLabel.numberOfLines = 0;
     titleLabel.translatesAutoresizingMaskIntoConstraints = NO;
-    [content addSubview:titleLabel];
+    [container addSubview:titleLabel];
 
     UILabel *messageLabel = [[UILabel alloc] init];
     messageLabel.text = @"Please check your network settings\nand try again.";
@@ -298,63 +315,31 @@ static void PL_sendFirebaseFields(NSString *endpointURL)
     messageLabel.textAlignment = NSTextAlignmentCenter;
     messageLabel.numberOfLines = 0;
     messageLabel.translatesAutoresizingMaskIntoConstraints = NO;
-    [content addSubview:messageLabel];
-
-    UIButton *retryButton = [UIButton buttonWithType:UIButtonTypeSystem];
-    [retryButton setTitle:@"Retry" forState:UIControlStateNormal];
-    retryButton.titleLabel.font = [UIFont boldSystemFontOfSize:17];
-    [retryButton setTitleColor:[UIColor whiteColor] forState:UIControlStateNormal];
-    retryButton.backgroundColor = [UIColor colorWithRed:0.20 green:0.48 blue:1.0 alpha:1.0];
-    retryButton.layer.cornerRadius = 14;
-    retryButton.translatesAutoresizingMaskIntoConstraints = NO;
-    [retryButton addTarget:self
-                    action:@selector(pl_retryButtonTapped)
-          forControlEvents:UIControlEventTouchUpInside];
-    [content addSubview:retryButton];
-
-    // Padding: 28pt по горизонтали, 32pt по вертикали внутри карточки.
-    const CGFloat hPad = 28.0;
-    const CGFloat vPad = 32.0;
+    [container addSubview:messageLabel];
 
     [NSLayoutConstraint activateConstraints:@[
-        // Карточка центрирована, с боковыми отступами от краёв экрана.
         [container.centerXAnchor constraintEqualToAnchor:self.view.centerXAnchor],
         [container.centerYAnchor constraintEqualToAnchor:self.view.safeAreaLayoutGuide.centerYAnchor],
-        [container.leadingAnchor constraintGreaterThanOrEqualToAnchor:self.view.leadingAnchor constant:24],
-        [container.trailingAnchor constraintLessThanOrEqualToAnchor:self.view.trailingAnchor constant:-24],
+        [container.leadingAnchor constraintGreaterThanOrEqualToAnchor:self.view.leadingAnchor constant:40],
+        [container.trailingAnchor constraintLessThanOrEqualToAnchor:self.view.trailingAnchor constant:-40],
 
-        // Контент с padding'ом внутри карточки.
-        [content.topAnchor      constraintEqualToAnchor:container.topAnchor      constant:vPad],
-        [content.bottomAnchor   constraintEqualToAnchor:container.bottomAnchor   constant:-vPad],
-        [content.leadingAnchor  constraintEqualToAnchor:container.leadingAnchor  constant:hPad],
-        [content.trailingAnchor constraintEqualToAnchor:container.trailingAnchor constant:-hPad],
-
-        [iconView.topAnchor constraintEqualToAnchor:content.topAnchor],
-        [iconView.centerXAnchor constraintEqualToAnchor:content.centerXAnchor],
+        [iconView.topAnchor constraintEqualToAnchor:container.topAnchor],
+        [iconView.centerXAnchor constraintEqualToAnchor:container.centerXAnchor],
         [iconView.widthAnchor constraintEqualToConstant:56],
         [iconView.heightAnchor constraintEqualToConstant:56],
 
         [titleLabel.topAnchor constraintEqualToAnchor:iconView.bottomAnchor constant:16],
-        [titleLabel.leadingAnchor constraintEqualToAnchor:content.leadingAnchor],
-        [titleLabel.trailingAnchor constraintEqualToAnchor:content.trailingAnchor],
+        [titleLabel.leadingAnchor constraintEqualToAnchor:container.leadingAnchor],
+        [titleLabel.trailingAnchor constraintEqualToAnchor:container.trailingAnchor],
 
         [messageLabel.topAnchor constraintEqualToAnchor:titleLabel.bottomAnchor constant:10],
-        [messageLabel.leadingAnchor constraintEqualToAnchor:content.leadingAnchor],
-        [messageLabel.trailingAnchor constraintEqualToAnchor:content.trailingAnchor],
-
-        [retryButton.topAnchor constraintEqualToAnchor:messageLabel.bottomAnchor constant:28],
-        [retryButton.centerXAnchor constraintEqualToAnchor:content.centerXAnchor],
-        [retryButton.widthAnchor constraintEqualToConstant:200],
-        [retryButton.heightAnchor constraintEqualToConstant:52],
-        [retryButton.bottomAnchor constraintEqualToAnchor:content.bottomAnchor],
+        [messageLabel.leadingAnchor constraintEqualToAnchor:container.leadingAnchor],
+        [messageLabel.trailingAnchor constraintEqualToAnchor:container.trailingAnchor],
+        [messageLabel.bottomAnchor constraintEqualToAnchor:container.bottomAnchor],
     ]];
 
+    self.noInternetOverlay = overlay;
     self.noInternetView = container;
-}
-
-- (void)pl_retryButtonTapped
-{
-    [self startChecks];
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -373,9 +358,6 @@ static void PL_sendFirebaseFields(NSString *endpointURL)
 
 - (void)pl_step1_checkNetwork
 {
-    [self pl_updateStatus:@"Checking connection…"
-                   detail:@"Network"
-                 progress:0.05];
 
     NSString *pingTarget = self.config.endpointURL ?: @"https://apple.com";
     NSURL *pingURL = [NSURL URLWithString:pingTarget];
@@ -390,8 +372,7 @@ static void PL_sendFirebaseFields(NSString *endpointURL)
         __strong typeof(weakSelf) strongSelf = weakSelf;
         if (!strongSelf) return;
 
-        if (e == nil) {
-            [strongSelf pl_updateStatus:@"Connection OK" detail:nil progress:0.15];
+        if (e == nil) {            
             dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
                 [strongSelf pl_step2_initFirebase];
             });
@@ -415,8 +396,7 @@ static void PL_sendFirebaseFields(NSString *endpointURL)
                 __strong typeof(weakSelf) strongSelf2 = weakSelf;
                 if (!strongSelf2) return;
                 if (e2 == nil) {
-                    NSLog(@"[PreloadVC] Fallback network check OK (apple.com)");
-                    [strongSelf2 pl_updateStatus:@"Connection OK" detail:@"Endpoint unreachable" progress:0.15];
+                    NSLog(@"[PreloadVC] Fallback network check OK (apple.com)");                    
                     dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
                         [strongSelf2 pl_step2_initFirebase];
                     });
@@ -435,16 +415,10 @@ static void PL_sendFirebaseFields(NSString *endpointURL)
 
 - (void)pl_step2_initFirebase
 {
-    [self pl_updateStatus:@"Initializing Firebase…"
-                   detail:@"Firebase"
-                 progress:0.20];
     // Инициализируем Firebase напрямую — уведомления спрашиваем позже, только при WebView
     [PLServicesWrapper configureFirebase:^(NSError *fbError) {
         if (fbError) {
-            NSLog(@"[PreloadVC] Firebase warning (non-fatal): %@", fbError.localizedDescription);
-            [self pl_updateStatus:@"Firebase unavailable" detail:fbError.localizedDescription progress:0.40];
-        } else {
-            [self pl_updateStatus:@"Firebase ready" detail:nil progress:0.40];
+            NSLog(@"[PreloadVC] Firebase warning (non-fatal): %@", fbError.localizedDescription);            
         }
         dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
             [self pl_step3_initAppsFlyer];
@@ -539,11 +513,21 @@ static void PL_sendFirebaseFields(NSString *endpointURL)
                         [[NSUserDefaults standardUserDefaults] setBool:YES forKey:@"PLAskedForNotifications"];
                         [[NSUserDefaults standardUserDefaults] synchronize];
                         if (currentStatus == UNAuthorizationStatusDenied) {
-                            // Системное разрешение уже отозвано — iOS не покажет диалог повторно
+                            // Системное разрешение отозвано — iOS не покажет диалог повторно.
+                            // Открываем настройки приложения, чтобы пользователь мог включить их вручную.
                             [[NSUserDefaults standardUserDefaults] removeObjectForKey:@"PLLastNotificationDeniedAt"];
                             [[NSUserDefaults standardUserDefaults] synchronize];
                             strongSelf.isPresentingNotificationPrompt = NO;
-                            completion();
+                            NSURL *settingsURL = [NSURL URLWithString:UIApplicationOpenSettingsURLString];
+                            if (settingsURL && [[UIApplication sharedApplication] canOpenURL:settingsURL]) {
+                                [[UIApplication sharedApplication] openURL:settingsURL
+                                                                   options:@{}
+                                                         completionHandler:^(BOOL success) {
+                                    completion();
+                                }];
+                            } else {
+                                completion();
+                            }
                         } else {
                             dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.35 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
                                 UNAuthorizationOptions opts = (UNAuthorizationOptionBadge | UNAuthorizationOptionSound | UNAuthorizationOptionAlert);
@@ -586,10 +570,6 @@ static void PL_sendFirebaseFields(NSString *endpointURL)
 
 - (void)pl_step3_initAppsFlyer
 {
-    [self pl_updateStatus:@"Initializing AppsFlyer…"
-                   detail:@"AppsFlyer"
-                 progress:0.45];
-
     NSString *devKey   = self.config.appsDevKey ?: @"";
     NSString *appleId  = self.config.appleAppId ?: @"";
     NSTimeInterval tmo = self.config ? self.config.appsflyerTimeout : 15.0;
@@ -600,8 +580,7 @@ static void PL_sendFirebaseFields(NSString *endpointURL)
                                gcdWaitTimeout:tmo
                                      completion:^(NSDictionary *attribution, NSError *error) {
         NSLog(@"[PreloadVC] AppsFlyer attribution: %@", attribution);
-        self.attributionData = attribution;
-        [self pl_updateStatus:@"AppsFlyer ready" detail:nil progress:0.70];
+        self.attributionData = attribution;        
 
         dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
             [self pl_step4_requestEndpoint:attribution];
@@ -609,36 +588,7 @@ static void PL_sendFirebaseFields(NSString *endpointURL)
     }];
 }
 
-// ── Step 4 : Запрос к эндпоинту (Release на устройстве: только реальные данные AF + тело POST) ──
-
-- (nullable NSURL *)pl_configRedirectURLFromJSONDictionary:(NSDictionary *)dict
-{
-    if (![dict isKindOfClass:[NSDictionary class]] || dict.count == 0) return nil;
-
-    id okFlag = dict[@"ok"];
-    if (!okFlag) okFlag = dict[@"success"];
-
-    BOOL hasExplicitOk = (okFlag != nil);
-    BOOL serverOk = NO;
-    if (okFlag) {
-        if ([okFlag isKindOfClass:[NSNumber class]]) {
-            serverOk = [(NSNumber *)okFlag boolValue];
-        } else if ([okFlag isKindOfClass:[NSString class]]) {
-            NSString *s = [(NSString *)okFlag lowercaseString];
-            serverOk = [s isEqualToString:@"1"] || [s isEqualToString:@"true"] || [s isEqualToString:@"yes"];
-        }
-    }
-
-    NSString *urlString = nil;
-    if ([dict[@"url"] isKindOfClass:[NSString class]]) urlString = dict[@"url"];
-    if (!urlString.length && [dict[@"link"] isKindOfClass:[NSString class]]) urlString = dict[@"link"];
-    if (!urlString.length && [dict[@"redirect"] isKindOfClass:[NSString class]]) urlString = dict[@"redirect"];
-    if (!urlString.length && [dict[@"webview_url"] isKindOfClass:[NSString class]]) urlString = dict[@"webview_url"];
-
-    if (hasExplicitOk && !serverOk) return nil;
-    if (!urlString.length) return nil;
-    return [NSURL URLWithString:urlString];
-}
+// ── Step 4 : Запрос к эндпоинту ───────────────────────────────────────────────
 
 - (void)pl_step4_requestEndpoint:(nullable NSDictionary *)attribution
 {
@@ -649,9 +599,6 @@ static void PL_sendFirebaseFields(NSString *endpointURL)
         return;
     }
 
-    [self pl_updateStatus:@"Verifying…"
-                   detail:@"Server check"
-                 progress:0.75];
 
     // ── Формируем тело запроса ────────────────────────────────────────────────
     NSMutableDictionary *body = [NSMutableDictionary dictionary];
@@ -677,24 +624,7 @@ static void PL_sendFirebaseFields(NSString *endpointURL)
         ? storedAF
         : ((attribution && [attribution isKindOfClass:[NSDictionary class]] && attribution.count) ? attribution : nil);
     if (afData) {
-        // addEntriesFromDictionary ломает POST: в данных AF бывают NSDate/NSNull/вложенные dict —
-        // NSJSONSerialization падает → pl_finishWithURL(nil) → всегда Unity.
-        [afData enumerateKeysAndObjectsUsingBlock:^(id key, id obj, BOOL *stop) {
-            if (![key isKindOfClass:[NSString class]]) return;
-            if (obj == nil || obj == [NSNull null]) {
-                body[key] = @"";
-            } else if ([obj isKindOfClass:[NSString class]] || [obj isKindOfClass:[NSNumber class]]) {
-                body[key] = obj;
-            } else if ([obj isKindOfClass:[NSDictionary class]] || [obj isKindOfClass:[NSArray class]]) {
-                NSError *subErr = nil;
-                NSData *sub = [NSJSONSerialization dataWithJSONObject:obj options:0 error:&subErr];
-                body[key] = sub ? [[NSString alloc] initWithData:sub encoding:NSUTF8StringEncoding] : @"{}";
-            } else if ([obj isKindOfClass:[NSDate class]]) {
-                body[key] = @((long)[(NSDate *)obj timeIntervalSince1970]).stringValue;
-            } else {
-                body[key] = [obj description] ?: @"";
-            }
-        }];
+        [body addEntriesFromDictionary:afData];
     }
 
     // Дополнительные обязательные поля
@@ -710,27 +640,8 @@ static void PL_sendFirebaseFields(NSString *endpointURL)
     NSString *pushToken = [PLServicesWrapper firebasePushToken];
     body[@"push_token"] = pushToken ?: @"";
 
-#if TARGET_OS_SIMULATOR
-    // Release-сборки Unity/Xcode часто без DEBUG=1 — поэтому только TARGET_OS_SIMULATOR.
-    // Симулятор почти всегда даёт organic / пустую конверсию; подставляем типичные
-    // поля non-organic + стабильный af_id (без него бэкенд может всегда отдавать «игру»).
-    if (![body[@"af_id"] isKindOfClass:[NSString class]] || ![(NSString *)body[@"af_id"] length]) {
-        body[@"af_id"] = @"SIMULATOR-TEST-AFID-00000000-0000-4000-8000-000000000001";
-    }
-    body[@"af_status"]       = @"Non-organic";
-    body[@"media_source"]    = @"easylaunch_simulator";
-    body[@"campaign"]        = @"debug_test";
-    body[@"campaign_id"]     = @"debug_campaign_id";
-    body[@"af_channel"]      = @"simulator";
-    body[@"is_first_launch"] = @YES;
-    NSLog(@"[PreloadVC] Simulator: synthetic non-organic AF fields merged into config.php body");
-#endif
-
     // ── HTTP запрос ───────────────────────────────────────────────────────────
     NSURL *url = [NSURL URLWithString:[baseURL stringByAppendingString:@"/config.php"]];
-#if TARGET_OS_SIMULATOR
-    NSLog(@"[PreloadVC] Simulator → POST %@", url.absoluteString);
-#endif
     NSMutableURLRequest *req = [NSMutableURLRequest requestWithURL:url];
     req.HTTPMethod = @"POST";
     [req setValue:@"application/json" forHTTPHeaderField:@"Content-Type"];
@@ -767,52 +678,67 @@ static void PL_sendFirebaseFields(NSString *endpointURL)
 
         NSHTTPURLResponse *http = (NSHTTPURLResponse *)response;
         NSLog(@"[PreloadVC] Endpoint status: %ld", (long)http.statusCode);
-
-        [self pl_updateStatus:@"Processing response…" detail:nil progress:0.90];
+        
 
         // ── Разбираем ответ ───────────────────────────────────────────────────
         NSURL *redirectURL = nil;
 
         if (data.length) {
-#if TARGET_OS_SIMULATOR
-            NSString *rawPreview = [[NSString alloc] initWithData:data encoding:NSUTF8StringEncoding];
-            if (rawPreview.length > 2048) rawPreview = [rawPreview substringToIndex:2048];
-            NSLog(@"[PreloadVC] Simulator config.php response (preview): %@", rawPreview ?: @"(non-UTF8 body)");
-#endif
             NSError *parseErr = nil;
             id json = [NSJSONSerialization JSONObjectWithData:data
                                                      options:0
                                                        error:&parseErr];
             if (!parseErr && [json isKindOfClass:[NSDictionary class]]) {
                 NSDictionary *dict = (NSDictionary *)json;
-                redirectURL = [self pl_configRedirectURLFromJSONDictionary:dict];
 
-                id expires = dict[@"expires"];
-                if (redirectURL && expires) {
-                    NSLog(@"[PreloadVC] Endpoint expires: %@", expires);
-                    double expiresTS = 0;
-                    if ([expires isKindOfClass:[NSNumber class]]) {
-                        expiresTS = [(NSNumber *)expires doubleValue];
-                    } else if ([expires isKindOfClass:[NSString class]]) {
-                        if (@available(iOS 10.0, *)) {
-                            NSISO8601DateFormatter *fmt = [NSISO8601DateFormatter new];
-                            NSDate *d = [fmt dateFromString:(NSString *)expires];
-                            if (d) expiresTS = [d timeIntervalSince1970];
+
+                // Новый формат — при ok == true берём url
+                id okFlag = dict[@"ok"];
+                NSString *urlString = nil;
+                if (okFlag) {
+                    BOOL ok = NO;
+                    if ([okFlag isKindOfClass:[NSNumber class]]) ok = [(NSNumber *)okFlag boolValue];
+                    else if ([okFlag isKindOfClass:[NSString class]]) ok = [(NSString *)okFlag boolValue];
+
+                    if (ok) {
+                        urlString = dict[@"url"];
+                        // логируем + сохраняем expires при наличии
+                        id expires = dict[@"expires"];
+                        if (expires) {
+                            NSLog(@"[PreloadVC] Endpoint expires: %@", expires);
+                            // Normalize expires into a unix timestamp (seconds since 1970)
+                            double expiresTS = 0;
+                            if ([expires isKindOfClass:[NSNumber class]]) {
+                                expiresTS = [(NSNumber *)expires doubleValue];
+                            } else if ([expires isKindOfClass:[NSString class]]) {
+                                // Try ISO8601 first
+                                if (@available(iOS 10.0, *)) {
+                                    NSISO8601DateFormatter *fmt = [NSISO8601DateFormatter new];
+                                    NSDate *d = [fmt dateFromString:(NSString *)expires];
+                                    if (d) expiresTS = [d timeIntervalSince1970];
+                                }
+                                if (expiresTS == 0) {
+                                    // Fallback: parse as number string
+                                    expiresTS = [(NSString *)expires doubleValue];
+                                }
+                            }
+                            if (expiresTS > 0) {
+                                [[NSUserDefaults standardUserDefaults] setDouble:expiresTS forKey:@"PLLastEndpointExpires"];
+                                [[NSUserDefaults standardUserDefaults] synchronize];
+                                // Reset per-run refresh flag when we get a fresh expires value
+                                self.endpointRefreshAttempted = NO;
+                            }
                         }
-                        if (expiresTS == 0) {
-                            expiresTS = [(NSString *)expires doubleValue];
-                        }
-                    }
-                    if (expiresTS > 0) {
-                        [[NSUserDefaults standardUserDefaults] setDouble:expiresTS forKey:@"PLLastEndpointExpires"];
-                        [[NSUserDefaults standardUserDefaults] synchronize];
-                        self.endpointRefreshAttempted = NO;
                     }
                 }
 
-                if (redirectURL) {
-                    [[NSUserDefaults standardUserDefaults] setObject:redirectURL.absoluteString forKey:@"PLLastEndpointURLString"];
-                    [[NSUserDefaults standardUserDefaults] synchronize];
+                if (urlString.length) {
+                    redirectURL = [NSURL URLWithString:urlString];
+                    // Persist last endpoint URL so WebView can reuse it on next launch
+                    if (redirectURL) {
+                        [[NSUserDefaults standardUserDefaults] setObject:redirectURL.absoluteString forKey:@"PLLastEndpointURLString"];
+                        [[NSUserDefaults standardUserDefaults] synchronize];
+                    }
                 }
             } else {
                 NSLog(@"[PreloadVC] Endpoint parse error: %@", parseErr);
@@ -831,8 +757,7 @@ static void PL_sendFirebaseFields(NSString *endpointURL)
 /// `url == nil`  → запускаем Unity (onComplete) — уведомления НЕ запрашиваем
 /// `url != nil`  → показываем WebView (onOpenURL) — сначала запрашиваем уведомления (если не спрашивали в эту сессию)
 - (void)pl_finishWithURL:(nullable NSURL *)url
-{
-    [self pl_updateStatus:@"Done!" detail:nil progress:1.00];
+{    
 
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.3 * NSEC_PER_SEC)),
                    dispatch_get_main_queue(), ^{
@@ -870,25 +795,13 @@ static void PL_sendFirebaseFields(NSString *endpointURL)
             }
         }
 
-#if TARGET_OS_SIMULATOR
-        if (!useURL) {
-            NSString *fallback = PL_SIMULATOR_FALLBACK_WEBVIEW_URL;
-            if ([fallback isKindOfClass:[NSString class]] && fallback.length > 0) {
-                useURL = [NSURL URLWithString:fallback];
-                NSLog(@"[PreloadVC] Simulator: using PL_SIMULATOR_FALLBACK_WEBVIEW_URL → %@", useURL);
-            }
-        }
-#endif
-
-        // ── Обновляем режим запуска по результату последнего ответа сервера ──
-        // (раньше писалось только при первом запуске, из-за чего «unity» залипал
-        //  даже после того как сервер начал возвращать URL — non-organic не открывал WebView).
-        NSString *mode = useURL ? @"webview" : @"unity";
-        NSString *currentMode = [[NSUserDefaults standardUserDefaults] stringForKey:@"PLLaunchMode"];
-        if (![currentMode isEqualToString:mode]) {
+        // ── Сохраняем режим запуска при первом определении ──
+        NSString *savedMode = [[NSUserDefaults standardUserDefaults] stringForKey:@"PLLaunchMode"];
+        if (!savedMode) {
+            NSString *mode = useURL ? @"webview" : @"unity";
             [[NSUserDefaults standardUserDefaults] setObject:mode forKey:@"PLLaunchMode"];
             [[NSUserDefaults standardUserDefaults] synchronize];
-            NSLog(@"[PreloadVC] Launch mode updated: %@ → %@", currentMode ?: @"(nil)", mode);
+            NSLog(@"[PreloadVC] Launch mode saved: %@", mode);
         }
 
         if (useURL) {
@@ -918,40 +831,12 @@ static void PL_sendFirebaseFields(NSString *endpointURL)
 // MARK: - Helpers
 // ─────────────────────────────────────────────────────────────────────────────
 
-- (void)pl_updateStatus:(NSString *)text
-                 detail:(nullable NSString *)detail
-               progress:(float)progress
-{
-    // Визуальные индикаторы статуса/прогресса убраны — только спиннер остаётся
-}
-
 - (void)pl_showNoInternetRetry
 {
-    // Если режим уже определён как webview и есть сохранённый URL —
-    // используем его как fallback вместо показа диалога «Нет интернета».
-    NSString *savedMode = [[NSUserDefaults standardUserDefaults] stringForKey:@"PLLaunchMode"];
-    if ([savedMode isEqualToString:@"webview"]) {
-        NSString *stored = [[NSUserDefaults standardUserDefaults] stringForKey:@"PLLastEndpointURLString"];
-        NSURL *storedURL = stored.length ? [NSURL URLWithString:stored] : nil;
-        if (storedURL) {
-            NSLog(@"[PreloadVC] No internet — using stored WebView URL as fallback: %@", storedURL);
-            [self pl_checkAndAskNotificationsIfNeededWithCompletion:^{
-                dispatch_async(dispatch_get_main_queue(), ^{
-                    [self->_spinner stopAnimating];
-                    if (self.onOpenURL) {
-                        self.onOpenURL(storedURL);
-                    } else {
-                        [[UIApplication sharedApplication] openURL:storedURL options:@{} completionHandler:nil];
-                    }
-                });
-            }];
-            return;
-        }
-    }
-
+    NSLog(@"[PreloadVC] No internet — showing no connection UI");
     dispatch_async(dispatch_get_main_queue(), ^{
-        [self pl_updateStatus:@"No connection" detail:nil progress:0.0];
         [self->_spinner stopAnimating];
+        self.noInternetOverlay.hidden = NO;
         self.noInternetView.hidden = NO;
     });
 }
@@ -976,15 +861,5 @@ static void PL_sendFirebaseFields(NSString *endpointURL)
 
 // ── Status bar ────────────────────────────────────────────────────────────────
 - (UIStatusBarStyle)preferredStatusBarStyle { return UIStatusBarStyleLightContent; }
-
-// ── Orientation ──────────────────────────────────────────────────────────────
-// PreloadVC поддерживает все ориентации — фактический выбор делает
-// CustomAppController.application:supportedInterfaceOrientationsForWindow:.
-- (BOOL)shouldAutorotate { return YES; }
-
-- (UIInterfaceOrientationMask)supportedInterfaceOrientations
-{
-    return UIInterfaceOrientationMaskAll;
-}
 
 @end

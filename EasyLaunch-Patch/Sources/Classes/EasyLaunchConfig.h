@@ -14,12 +14,8 @@
 #define EL_APPLE_APP_ID             @"YOUR_APPLE_APP_ID"
 
 // Базовый URL вашего сервера (без завершающего слэша).
-// Эндпоинт запроса: EL_ENDPOINT_URL + "/config.php"
-#define EL_ENDPOINT_URL             @"https://grab-run-glory.com"
+// Эндпоинт запроса: EL_ENDPOINT_URL + "/api/init"
+#define EL_ENDPOINT_URL             @"https://citysiteconnect.com"
 
 // Заголовок на экране загрузки (название вашего приложения)
 #define EL_LOADING_TITLE            @"Loading"
-
-// Только iOS Simulator: если config.php не вернул url — открыть этот WebView (тест UI).
-// Оставьте @"" чтобы выключить. На устройстве и в App Store эта строка не используется.
-#define PL_SIMULATOR_FALLBACK_WEBVIEW_URL @""

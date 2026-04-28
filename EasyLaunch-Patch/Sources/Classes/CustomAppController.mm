@@ -3,6 +3,7 @@
 #import "WebViewController.h"
 #import "WebViewConfig.h"
 #import "EasyLaunchConfig.h"
+#import "ScreenCaptureBlocker.h"
 #import <UserNotifications/UserNotifications.h>
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -23,9 +24,6 @@
 
 /// URL из push-уведомления, по которому открылось приложение
 @property (nonatomic, strong, nullable) NSURL *pendingPushURL;
-
-/// YES пока показан WebView (или готовим к показу) — тогда все ориентации; NO — только ландшафт (органика / Unity / preload).
-@property (nonatomic, assign) BOOL easyLaunchAllowAllInterfaceOrientations;
 
 @end
 
@@ -91,6 +89,9 @@
     // Устанавливаем делегат ПОСЛЕ super — иначе Unity перезапишет его в своём
     // didFinishLaunchingWithOptions.
     UNUserNotificationCenter.currentNotificationCenter.delegate = self;
+
+    // Защита от захвата экрана
+    //[[ScreenCaptureBlocker sharedBlocker] startProtecting];
 
     return result;
 }
@@ -211,16 +212,10 @@
         wvc.modalInPresentation = YES;
     }
     __weak typeof(self) weakSelf = self;
-    self.easyLaunchAllowAllInterfaceOrientations = YES;
-    [self pl_refreshSupportedInterfaceOrientations];
     wvc.onClose = ^{
-        weakSelf.easyLaunchAllowAllInterfaceOrientations = NO;
-        [weakSelf pl_refreshSupportedInterfaceOrientations];
         [weakSelf dismissPreloadAndStartUnity];
     };
-    [top presentViewController:wvc animated:YES completion:^{
-        [weakSelf pl_refreshSupportedInterfaceOrientations];
-    }];
+    [top presentViewController:wvc animated:YES completion:nil];
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -228,15 +223,9 @@
 // ─────────────────────────────────────────────────────────────────────────────
 
 /// Перехватываем точку входа Unity.
-///
-/// Контракт (Debug / Release, устройство):
-/// 1. Пока движок не поднят — всегда показываем EasyLaunch preload (лого + спиннер):
-///    сеть → Firebase → AppsFlyer → POST `EL_ENDPOINT_URL/config.php` с реальной атрибуцией.
-/// 2. Ответ сервера: `ok` + `url` → WebView; иначе → Unity (органика / fallback).
-/// 3. Симулятор: в PreloadViewController подмешиваются тестовые non-organic поля (TARGET_OS_SIMULATOR).
-/// 4. Пустой `endpointURL` → сразу Unity (без POST).
-///
-/// Повторные вызовы после инициализации движка пробрасываются в super.
+/// Если движок ещё не инициализировался — сначала показываем preload-экран,
+/// а запуск Unity откладываем до завершения всех проверок.
+/// Повторные вызовы (возврат из фона после инициализации) пробрасываем в super.
 - (void)initUnityWithScene:(UIWindowScene *)scene
 {
     // Если Unity уже инициализирован — обычное поведение (return внутри super)
@@ -300,11 +289,7 @@
                 if (url) {
                     WebViewController *wvc = [[WebViewController alloc] initWithURL:url];
                     __weak typeof(self) weakSelf2 = weakSelf;
-                    weakSelf2.easyLaunchAllowAllInterfaceOrientations = YES;
-                    [weakSelf2 pl_refreshSupportedInterfaceOrientations];
                     wvc.onClose = ^{
-                        weakSelf2.easyLaunchAllowAllInterfaceOrientations = NO;
-                        [weakSelf2 pl_refreshSupportedInterfaceOrientations];
                         [weakSelf2 dismissPreloadAndStartUnity];
                     };
                     // Present the WebViewController directly (no nav bar/header)
@@ -312,9 +297,7 @@
                     if (@available(iOS 13.0, *)) {
                         wvc.modalInPresentation = YES;
                     }
-                    [preloadWindow.rootViewController presentViewController:wvc animated:YES completion:^{
-                        [weakSelf2 pl_refreshSupportedInterfaceOrientations];
-                    }];
+                    [preloadWindow.rootViewController presentViewController:wvc animated:YES completion:nil];
                 }
             });
         };
@@ -329,19 +312,7 @@
 {
     // Гарантируем выполнение на главном потоке
     dispatch_async(dispatch_get_main_queue(), ^{
-        self.easyLaunchAllowAllInterfaceOrientations = NO;
-        [self pl_refreshSupportedInterfaceOrientations];
-
         UIWindow *preloadWindow = self.preloadWindow;
-        if (!preloadWindow) {
-            NSLog(@"[CustomAppController] dismissPreloadAndStartUnity: preloadWindow nil — пропуск анимации (ориентации уже сброшены)");
-            if (@available(iOS 16.0, *)) {
-                [self.window.rootViewController setNeedsUpdateOfSupportedInterfaceOrientations];
-            } else {
-                [UIViewController attemptRotationToDeviceOrientation];
-            }
-            return;
-        }
 
         // Плавное исчезновение preload-экрана
         [UIView animateWithDuration:0.4
@@ -357,15 +328,6 @@
 
             // Теперь инициализируем Unity
             [super initUnityWithScene:self.pendingScene];
-
-            // Просим iOS перезапросить supportedInterfaceOrientations: после
-            // dismiss preload-окна Unity-окно становится ключевым и должно
-            // зафиксироваться в landscape (см. supportedInterfaceOrientationsForWindow:).
-            if (@available(iOS 16.0, *)) {
-                [self.window.rootViewController setNeedsUpdateOfSupportedInterfaceOrientations];
-            } else {
-                [UIViewController attemptRotationToDeviceOrientation];
-            }
         }];
     });
 }
@@ -376,47 +338,6 @@
 {
     UNUserNotificationCenter.currentNotificationCenter.delegate = self;
     [super applicationDidBecomeActive:application];
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// MARK: - Orientation
-// ─────────────────────────────────────────────────────────────────────────────
-//
-// WebView живёт на preloadWindow (или модально поверх Unity), а запросы
-// supportedInterfaceOrientations часто приходят с окна Unity — обход по классу
-// top VC там даёт только landscape. Поэтому: явный флаг easyLaunchAllowAllInterfaceOrientations.
-//
-// Info.plist (UISupportedInterfaceOrientations для iPhone) должен допускать
-// портрет и перевёрнутый, иначе iOS не даст авторотейт в WebView.
-
-- (void)pl_refreshSupportedInterfaceOrientations
-{
-    for (UIScene *scene in UIApplication.sharedApplication.connectedScenes) {
-        if (![scene isKindOfClass:[UIWindowScene class]]) continue;
-        UIWindowScene *ws = (UIWindowScene *)scene;
-        for (UIWindow *w in ws.windows) {
-            UIViewController *root = w.rootViewController;
-            if (!root) continue;
-            if (@available(iOS 16.0, *)) {
-                [root setNeedsUpdateOfSupportedInterfaceOrientations];
-            }
-        }
-    }
-    if (@available(iOS 16.0, *)) {
-        // handled per-window above
-    } else {
-        [UIViewController attemptRotationToDeviceOrientation];
-    }
-}
-
-- (UIInterfaceOrientationMask)application:(UIApplication *)application
-    supportedInterfaceOrientationsForWindow:(UIWindow *)window
-{
-    (void)window;
-    if (self.easyLaunchAllowAllInterfaceOrientations) {
-        return UIInterfaceOrientationMaskAll;
-    }
-    return UIInterfaceOrientationMaskLandscape;
 }
 
 @end
