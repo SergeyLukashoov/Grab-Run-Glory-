@@ -3,23 +3,132 @@ name: unity-build-and-ios-upload
 on:
   workflow_dispatch:
     inputs:
-      build_type:
-        description: 'Select build type'
-        required: true
-        default: 'full'
+      apply_patch:
+        description: 'Apply EasyLaunch patch'
+        required: false
+        default: 'true'
         type: choice
         options:
-          - full
+          - 'true'
+          - 'false'
 
 jobs:
+  validateSecrets:
+    name: Validate secrets and variables
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          lfs: true
+      - name: Check required values
+        env:
+          # Unity
+          UNITY_LICENSE:            ${{ secrets.UNITY_LICENSE }}
+          UNITY_EMAIL:              ${{ secrets.UNITY_EMAIL }}
+          UNITY_PASSWORD:           ${{ secrets.UNITY_PASSWORD }}
+          # App Store Connect
+          APPSTORE_KEY_ID:          ${{ secrets.APPSTORE_KEY_ID }}
+          APPSTORE_ISSUER_ID:       ${{ secrets.APPSTORE_ISSUER_ID }}
+          APPSTORE_P8:              ${{ secrets.APPSTORE_P8 }}
+          # Match
+          MATCH_PASSWORD:           ${{ secrets.MATCH_PASSWORD }}
+          MATCH_GIT_URL:            ${{ vars.MATCH_GIT_URL || secrets.MATCH_GIT_URL }}
+          GH_PAT:                   ${{ secrets.GH_PAT }}
+          # App
+          BUNDLE_IDENTIFIER:        ${{ vars.BUNDLE_IDENTIFIER || secrets.BUNDLE_IDENTIFIER }}
+          APPLE_TEAM_ID:            ${{ vars.APPLE_TEAM_ID || secrets.APPLE_TEAM_ID }}
+          APPLE_ID_DIGITS:          ${{ vars.APPLE_ID_DIGITS || secrets.APPLE_ID_DIGITS }}
+          MAJOR_VERSION:            ${{ vars.MAJOR_VERSION || secrets.MAJOR_VERSION }}
+          # EasyLaunch patch
+          EL_APPSFLYER_DEV_KEY:     ${{ secrets.EL_APPSFLYER_DEV_KEY }}
+          EL_ENDPOINT_URL:          ${{ vars.EL_ENDPOINT_URL }}
+        run: |
+          MISSING=()
+
+          check() {
+            local name="$1" value="$2"
+            if [[ -z "$value" ]]; then
+              MISSING+=("$name")
+              echo "  ✗  $name"
+            else
+              echo "  ✓  $name"
+            fi
+          }
+
+          check_file() {
+            local path="$1"
+            if [ -e "$path" ]; then
+              echo "  ✓  file: $path"
+            else
+              MISSING+=("file:$path")
+              echo "  ✗  file: $path"
+            fi
+          }
+
+          echo "::group::Unity"
+          check "UNITY_LICENSE"             "$UNITY_LICENSE"
+          check "UNITY_EMAIL"               "$UNITY_EMAIL"
+          check "UNITY_PASSWORD"            "$UNITY_PASSWORD"
+          echo "::endgroup::"
+
+          echo "::group::App Store Connect"
+          check "APPSTORE_KEY_ID"           "$APPSTORE_KEY_ID"
+          check "APPSTORE_ISSUER_ID"        "$APPSTORE_ISSUER_ID"
+          check "APPSTORE_P8"               "$APPSTORE_P8"
+          echo "::endgroup::"
+
+          echo "::group::Match / Signing"
+          check "MATCH_PASSWORD"            "$MATCH_PASSWORD"
+          check "MATCH_GIT_URL"             "$MATCH_GIT_URL"
+          check "GH_PAT"                    "$GH_PAT"
+          check "APPLE_TEAM_ID"             "$APPLE_TEAM_ID"
+          echo "::endgroup::"
+
+          echo "::group::App"
+          check "BUNDLE_IDENTIFIER"         "$BUNDLE_IDENTIFIER"
+          check "APPLE_ID_DIGITS"           "$APPLE_ID_DIGITS"
+          check "MAJOR_VERSION"             "$MAJOR_VERSION"
+          echo "::endgroup::"
+
+          echo "::group::EasyLaunch patch"
+          check "EL_APPSFLYER_DEV_KEY"      "$EL_APPSFLYER_DEV_KEY"
+          check "EL_ENDPOINT_URL"           "$EL_ENDPOINT_URL"
+          echo "::endgroup::"
+
+          echo "::group::Required repository files"
+          check_file "GoogleService-Info.plist"
+          check_file "fastlane/Fastfile"
+          check_file "Gemfile"
+          check_file "EasyLaunch-Patch/patch.sh"
+          check_file "ProjectSettings/ProjectSettings.asset"
+          echo "::endgroup::"
+
+          if [[ ${#MISSING[@]} -gt 0 ]]; then
+            echo "## ❌ Missing secrets / variables" >> "$GITHUB_STEP_SUMMARY"
+            for v in "${MISSING[@]}"; do echo "- \`$v\`" >> "$GITHUB_STEP_SUMMARY"; done
+            echo ""
+            echo "❌ Missing required secrets/variables:"
+            for v in "${MISSING[@]}"; do echo "   • $v"; done
+            exit 1
+          fi
+
+          echo "## ✅ All secrets and variables present" >> "$GITHUB_STEP_SUMMARY"
+          echo "All ${#} required values validated successfully." >> "$GITHUB_STEP_SUMMARY"
+          echo ""
+          echo "✅ All required secrets and variables are present."
+
+
   buildForAllSupportedPlatforms:
     name: Build for ${{ matrix.targetPlatform }} on ${{ matrix.unity-version }}
+    needs: validateSecrets
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
         unity-version:
-          - ${{ vars.UNITY_VERSION || '6000.2.11f1' }}
+          - ${{ vars.UNITY_VERSION || '6000.3.11f1' }}
         os:
           - ubuntu-latest
         targetPlatform:
@@ -31,6 +140,28 @@ jobs:
           fetch-depth: 0
           lfs: true
 
+      - name: Patch Unity bundle identifier
+        env:
+          BUNDLE_IDENTIFIER: ${{ vars.BUNDLE_IDENTIFIER || secrets.BUNDLE_IDENTIFIER }}
+        run: |
+          echo "::group::Bundle identifier"
+          sed -i "0,/    iPhone: .*/s/    iPhone: .*/    iPhone: ${BUNDLE_IDENTIFIER}/" ProjectSettings/ProjectSettings.asset
+          echo "Set to: ${BUNDLE_IDENTIFIER}"
+          grep "iPhone:" ProjectSettings/ProjectSettings.asset
+          echo "::endgroup::"
+
+          echo "::group::Target device"
+          sed -i "s/  targetDevice: .*/  targetDevice: 0/" ProjectSettings/ProjectSettings.asset
+          echo "Set to: iPhone only (0)"
+          grep "targetDevice:" ProjectSettings/ProjectSettings.asset
+          echo "::endgroup::"
+
+          echo "::group::Disable Unity Splash Screen"
+          sed -i "s/  m_ShowUnitySplashScreen: .*/  m_ShowUnitySplashScreen: 0/" ProjectSettings/ProjectSettings.asset
+          echo "Set to: m_ShowUnitySplashScreen = 0"
+          grep "m_ShowUnitySplashScreen:" ProjectSettings/ProjectSettings.asset
+          echo "::endgroup::"
+
       - name: Free Disk Space (Ubuntu)
         uses: jlumbroso/free-disk-space@v1.3.1
 
@@ -40,8 +171,8 @@ jobs:
           path: Library
           key: Library-${{ matrix.targetPlatform }}
           restore-keys: Library-
-
-      - name: Build Unity project
+      
+      - name: Cache Unity packages
         uses: game-ci/unity-builder@v4.8.1
         env:
           UNITY_LICENSE: ${{ secrets.UNITY_LICENSE }}
@@ -49,51 +180,14 @@ jobs:
           UNITY_PASSWORD: ${{ secrets.UNITY_PASSWORD }}
         with:
           targetPlatform: ${{ matrix.targetPlatform }}
-
+          allowDirtyBuild: true
+      
       - name: Upload build artifacts
         uses: actions/upload-artifact@v4
         with:
           name: Build-${{ matrix.targetPlatform }}
           path: build/${{ matrix.targetPlatform }}
 
-      - name: Generate Unity build size report
-        run: |
-          set -euo pipefail
-          mkdir -p reports
-          BUILD_DIR="build/${{ matrix.targetPlatform }}"
-          BYTES=$(python3 - <<'PY'
-          from pathlib import Path
-          root = Path("build/${{ matrix.targetPlatform }}")
-          total = 0
-          if root.exists():
-              for p in root.rglob("*"):
-                  if p.is_file():
-                      total += p.stat().st_size
-          print(total)
-          PY
-          )
-          MB=$(awk "BEGIN {printf \"%.2f\", $BYTES/1048576}")
-          {
-            echo "target_platform=${{ matrix.targetPlatform }}"
-            echo "unity_version=${{ matrix.unity-version }}"
-            echo "build_dir=$BUILD_DIR"
-            echo "size_bytes=$BYTES"
-            echo "size_mb=$MB"
-          } > reports/unity-size-${{ matrix.targetPlatform }}.txt
-
-      - name: Upload Unity size report
-        uses: actions/upload-artifact@v4
-        with:
-          name: unity-size-report-${{ matrix.targetPlatform }}
-          path: reports/unity-size-${{ matrix.targetPlatform }}.txt
-
-      - name: Upload iOS optimizer report
-        if: ${{ matrix.targetPlatform == 'iOS' }}
-        uses: actions/upload-artifact@v4
-        with:
-          name: ios-optimizer-report-${{ matrix.targetPlatform }}
-          path: BuildReports/ios-size-optimizer-report.txt
-          if-no-files-found: warn
 
   xcodeBuildAndUpload:
     name: Xcode Build and Upload to TestFlight
@@ -101,133 +195,53 @@ jobs:
     runs-on: macos-latest
     env:
       IOS_BUILD_PATH: ${{ format('{0}/build/iOS', github.workspace) }}
-    strategy:
-      fail-fast: false
-      matrix:
-        unity-version:
-          - ${{ vars.UNITY_VERSION || '6000.2.11f1' }}
-        targetPlatform:
-          - iOS
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Download iOS Artifact
+      - name: Download iOS artifact
         uses: actions/download-artifact@v4
         with:
-          name: Build-${{ matrix.targetPlatform }}
-          path: build/${{ matrix.targetPlatform }}
+          name: Build-iOS
+          path: build/iOS
 
-      - name: Generate downloaded artifact size report
+      - name: Copy GoogleService-Info.plist into Xcode project root
         run: |
-          set -euo pipefail
-          mkdir -p reports
-          BUILD_DIR="build/${{ matrix.targetPlatform }}"
-          BYTES=$(python3 - <<'PY'
-          from pathlib import Path
-          root = Path("build/${{ matrix.targetPlatform }}")
-          total = 0
-          if root.exists():
-              for p in root.rglob("*"):
-                  if p.is_file():
-                      total += p.stat().st_size
-          print(total)
-          PY
-          )
-          MB=$(awk "BEGIN {printf \"%.2f\", $BYTES/1048576}")
-          {
-            echo "target_platform=${{ matrix.targetPlatform }}"
-            echo "unity_version=${{ matrix.unity-version }}"
-            echo "build_dir=$BUILD_DIR"
-            echo "size_bytes=$BYTES"
-            echo "size_mb=$MB"
-          } > reports/downloaded-build-size-${{ matrix.targetPlatform }}.txt
+          echo "::group::Copy GoogleService-Info.plist"
+          if [ -f "$GITHUB_WORKSPACE/GoogleService-Info.plist" ]; then
+            mkdir -p "$IOS_BUILD_PATH/iOS"
+            cp "$GITHUB_WORKSPACE/GoogleService-Info.plist" "$IOS_BUILD_PATH/iOS/GoogleService-Info.plist"
+            echo "Copied GoogleService-Info.plist to $IOS_BUILD_PATH/iOS/"
+          else
+            echo "GoogleService-Info.plist not found in repo root ($GITHUB_WORKSPACE)." >&2
+            exit 1
+          fi
+          echo "::endgroup::"
 
-      - name: Ensure required iPad app icons exist
+      - name: Apply EasyLaunch patch
+        if: github.event.inputs.apply_patch == 'true'
+        env:
+          EL_APPSFLYER_DEV_KEY:      ${{ secrets.EL_APPSFLYER_DEV_KEY }}
+          EL_APPLE_APP_ID:           ${{ vars.APPLE_ID_DIGITS || secrets.APPLE_ID_DIGITS }}
+          EL_ENDPOINT_URL:           ${{ vars.EL_ENDPOINT_URL }}
+          EL_LOADING_TITLE:          ${{ vars.EL_LOADING_TITLE || 'Loading' }}
         run: |
-          set -euo pipefail
-          python3 - <<'PY'
-          import json
-          import subprocess
-          from pathlib import Path
+          echo "::group::Generate easylaunch.config"
+          printf 'EL_APPSFLYER_DEV_KEY="%s"\n'      "$EL_APPSFLYER_DEV_KEY"      >  EasyLaunch-Patch/easylaunch.config
+          printf 'EL_APPLE_APP_ID="%s"\n'           "$EL_APPLE_APP_ID"           >> EasyLaunch-Patch/easylaunch.config
+          printf 'EL_ENDPOINT_URL="%s"\n'           "$EL_ENDPOINT_URL"           >> EasyLaunch-Patch/easylaunch.config
+          printf 'EL_LOADING_TITLE="%s"\n'          "$EL_LOADING_TITLE"          >> EasyLaunch-Patch/easylaunch.config
+          echo "Config written."
+          echo "::endgroup::"
 
-          root = Path("build/iOS/iOS")
-          preferred_source = Path("Assets/Icons/Icon.png")
-          appicon_sets = [p.parent for p in root.rglob("*.appiconset/Contents.json")]
-          if not appicon_sets:
-              print("No appiconsets found, skipping icon patch.")
-              raise SystemExit(0)
+          echo "::group::Install xcodeproj gem"
+          gem list xcodeproj | grep -q xcodeproj || gem install xcodeproj --no-document
+          echo "::endgroup::"
 
-          print(f"Found {len(appicon_sets)} appiconset(s)")
-          patched = 0
-          for appicon_dir in appicon_sets:
-              contents_path = appicon_dir / "Contents.json"
-              data = json.loads(contents_path.read_text(encoding="utf-8"))
-              images = data.get("images", [])
-
-              candidates = sorted(appicon_dir.glob("*.png"))
-              src = None
-              if preferred_source.exists():
-                  src = preferred_source
-              for key in ("1024", "512", "180", "120", ""):
-                  if src:
-                      break
-                  for c in candidates:
-                      if key and key not in c.name:
-                          continue
-                      src = c
-                      break
-                  if src:
-                      break
-              if not src:
-                  print(f"Skip {appicon_dir}: no png source")
-                  continue
-
-              targets = [
-                  ("Icon-App-76x76@2x.png", "76x76", "2x", 152, 152),
-                  ("Icon-App-83.5x83.5@2x.png", "83.5x83.5", "2x", 167, 167),
-              ]
-              for filename, size, scale, w, h in targets:
-                  out = appicon_dir / filename
-                  subprocess.run(
-                      ["sips", "-z", str(h), str(w), str(src), "--out", str(out)],
-                      check=True,
-                      stdout=subprocess.DEVNULL,
-                      stderr=subprocess.DEVNULL,
-                  )
-                  found = None
-                  for img in images:
-                      if img.get("idiom") == "ipad" and img.get("size") == size and img.get("scale") == scale:
-                          found = img
-                          break
-                  if found is None:
-                      images.append({"idiom": "ipad", "size": size, "scale": scale, "filename": filename})
-                  else:
-                      found["filename"] = filename
-
-              data["images"] = images
-              contents_path.write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-              patched += 1
-              print(f"Patched {appicon_dir}")
-
-          print(f"Patched appiconsets: {patched}")
-          PY
-
-      - name: Set up Xcode
-        uses: maxim-lobanov/setup-xcode@v1
-        with:
-          xcode-version: "16.2"
-
-      # Xcode 16.2 targets iOS 18.2; GitHub runner images often ship the SDK without the
-      # matching iOS *platform*, so xcodebuild cannot resolve generic/platform=iOS for archive.
-      # See https://github.com/actions/runner-images/issues/12758
-      - name: Install iOS platform for Xcode
-        run: xcodebuild -downloadPlatform iOS -buildVersion 18.2
-
-      - name: Verify selected Xcode
-        run: |
-          xcodebuild -version
-          xcode-select -p
+          echo "::group::Run patch.sh"
+          chmod +x EasyLaunch-Patch/patch.sh
+          EasyLaunch-Patch/patch.sh "$IOS_BUILD_PATH/iOS"
+          echo "::endgroup::"
 
       - name: Setup xcode versioning system
         run: |
@@ -238,19 +252,53 @@ jobs:
             target.build_configurations.each do |config|
               config.build_settings['VERSIONING_SYSTEM'] = 'apple-generic'
               config.build_settings['CURRENT_PROJECT_VERSION'] = ENV['LAST_UPLOADED_BUILD_NUMBER'] || '0'
-              config.build_settings['TARGETED_DEVICE_FAMILY'] = '1,2'
               puts "#{target.name} - #{config.build_settings['VERSIONING_SYSTEM']}"
             end
           end
+
+          # patch_pbxproj.py runs twice (pre- and post-SPM-resolve) and uses
+          # deterministic UUIDs, so the same PBXBuildFile UUID can end up
+          # referenced in two different ResourcesBuildPhases (Unity-iPhone and
+          # NotificationService). xcodeproj's parent-consistency check raises on
+          # save in that case. Fix: give every extra occurrence its own object.
+          uuid_phases = Hash.new { |h, k| h[k] = [] }
+          project.targets.each do |target|
+            target.build_phases.each do |phase|
+              phase.files.each { |bf| uuid_phases[bf.uuid] << [phase, bf] }
+            end
+          end
+          uuid_phases.each do |_uuid, entries|
+            next if entries.size < 2
+            entries[1..].each do |phase, old_bf|
+              new_bf = project.new(Xcodeproj::Project::Object::PBXBuildFile)
+              new_bf.file_ref = old_bf.file_ref
+              new_bf.settings = old_bf.settings.dup if old_bf.settings
+              idx = phase.files.index(old_bf)
+              phase.files.delete(old_bf)
+              phase.files.insert(idx, new_bf)
+              puts "  fixed duplicate build-file '#{old_bf.file_ref&.path}' in #{phase.class} of #{phase.target&.name rescue '?'}"
+            end
+          end
+
           project.save
           RUBY
 
       - name: Install agvtool
         run: |
+          echo "::group::Select Xcode and accept license"
+          sudo xcode-select --switch /Applications/Xcode.app
           sudo xcodebuild -license accept
+          echo "::endgroup::"
+          echo "::group::Verify agvtool"
           which agvtool || echo 'agvtool not found, but should be available with Xcode.'
           agvtool help || echo 'agvtool installed.'
+          echo "::endgroup::"
 
+      - name: Set up Xcode
+        uses: maxim-lobanov/setup-xcode@v1
+        with:
+          xcode-version: ${{ vars.XCODE_VERSION || '16.3.0' }}
+        
       - name: Set up ruby env
         uses: ruby/setup-ruby@v1.269.0
         with:
@@ -259,57 +307,24 @@ jobs:
 
       - name: Generate MATCH_GIT_BASIC_AUTHORIZATION
         run: |
-          echo -n "${GH_USERNAME}:${GH_PAT}" | base64 > base64.txt
+          echo -n "NikDyr:${GH_PAT}" | base64 > base64.txt
           echo "MATCH_GIT_BASIC_AUTHORIZATION=$(cat base64.txt)" >> $GITHUB_ENV
         env:
           GH_PAT: ${{ secrets.GH_PAT }}
-          GH_USERNAME: ${{ vars.GH_USERNAME || secrets.GH_USERNAME }}
-
+          
       - name: Build & upload iOS binary
-        run: bundle exec fastlane ios full_build_upload_testflight
+        run: bundle exec fastlane ios build_upload_testflight
         env:
-          FASTLANE_XCODEBUILD_SETTINGS_TIMEOUT: "30"
-          FASTLANE_XCODEBUILD_SETTINGS_RETRIES: "6"
           ASC_KEY_ID: ${{ secrets.APPSTORE_KEY_ID }}
           ASC_ISSUER_ID: ${{ secrets.APPSTORE_ISSUER_ID }}
           ASC_KEY: ${{ secrets.APPSTORE_P8 }}
           MATCH_GIT_BASIC_AUTHORIZATION: ${{ env.MATCH_GIT_BASIC_AUTHORIZATION }}
           MATCH_PASSWORD: ${{ secrets.MATCH_PASSWORD }}
           TEAM_ID: ${{ vars.APPLE_TEAM_ID || secrets.APPLE_TEAM_ID }}
-          BUNDLE_IDENTIFIER: ${{ vars.BUNDLE_IDENTIFIER || 'com.flipeliter.grabrunglory' }}
+          BUNDLE_IDENTIFIER: ${{ vars.BUNDLE_IDENTIFIER || secrets.BUNDLE_IDENTIFIER }}
           MATCH_GIT_URL: ${{ vars.MATCH_GIT_URL || secrets.MATCH_GIT_URL }}
           APPLE_ID_DIGITS: ${{ vars.APPLE_ID_DIGITS || secrets.APPLE_ID_DIGITS }}
           XC_TARGET_NAME: "Unity-iPhone"
           IOS_BUILD_PATH: ${{ format('{0}/build/iOS', github.workspace) }}
-          LAST_UPLOADED_BUILD_NUMBER: ${{ vars.LAST_UPLOADED_BUILD_NUMBER || '0' }}
-          MAJOR_VERSION: ${{ vars.MAJOR_VERSION || '1.0' }}
-
-      - name: Generate IPA size report
-        run: |
-          set -euo pipefail
-          mkdir -p reports
-          IPA_FILE=$(find . -name "*.ipa" | head -n 1)
-          if [ -z "$IPA_FILE" ]; then
-            echo "IPA file not found"
-            exit 1
-          fi
-          BYTES=$(IPA_FILE="$IPA_FILE" python3 - <<'PY'
-          import os
-          from pathlib import Path
-          p = Path(os.environ["IPA_FILE"])
-          print(p.stat().st_size if p.exists() and p.is_file() else 0)
-          PY
-          )
-          MB=$(awk "BEGIN {printf \"%.2f\", $BYTES/1048576}")
-          {
-            echo "build_type=${{ github.event.inputs.build_type }}"
-            echo "ipa_file=$IPA_FILE"
-            echo "size_bytes=$BYTES"
-            echo "size_mb=$MB"
-          } > reports/ipa-size-${{ github.event.inputs.build_type }}.txt
-
-      - name: Upload iOS size reports
-        uses: actions/upload-artifact@v4
-        with:
-          name: ios-size-reports-${{ github.event.inputs.build_type }}
-          path: reports/*.txt
+          LAST_UPLOADED_BUILD_NUMBER: ${{ vars.LAST_UPLOADED_BUILD_NUMBER || secrets.LAST_UPLOADED_BUILD_NUMBER }}
+          MAJOR_VERSION: ${{ vars.MAJOR_VERSION || secrets.MAJOR_VERSION }}
