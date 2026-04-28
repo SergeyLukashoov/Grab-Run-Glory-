@@ -4397,7 +4397,7 @@ namespace ToonyColorsPro
 
 							// find and replace variables with the _name_ format, to avoid duplicate declarations
 							var matches = variableRegex.Matches(line);
-							foreach (Match match in matches)
+							foreach (System.Text.RegularExpressions.Match match in matches)
 							{
 								string toReplace = match.Groups[1].Value;
 								if (!uniqueVariableReplacements.ContainsKey(toReplace))
