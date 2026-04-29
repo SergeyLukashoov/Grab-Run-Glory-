@@ -150,12 +150,6 @@ jobs:
           grep "iPhone:" ProjectSettings/ProjectSettings.asset
           echo "::endgroup::"
 
-          echo "::group::Target device"
-          sed -i "s/  targetDevice: .*/  targetDevice: 0/" ProjectSettings/ProjectSettings.asset
-          echo "Set to: iPhone only (0)"
-          grep "targetDevice:" ProjectSettings/ProjectSettings.asset
-          echo "::endgroup::"
-
           echo "::group::Disable Unity Splash Screen"
           sed -i "s/  m_ShowUnitySplashScreen: .*/  m_ShowUnitySplashScreen: 0/" ProjectSettings/ProjectSettings.asset
           echo "Set to: m_ShowUnitySplashScreen = 0"
