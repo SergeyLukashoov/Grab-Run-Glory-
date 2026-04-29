@@ -24,6 +24,7 @@ project.pbxproj (без Xcode).
 import sys
 import re
 import hashlib
+from typing import Optional
 
 # ──────────────────────────────────────────────────────────────────────────────
 # Описание пакетов и их products
@@ -51,7 +52,7 @@ def already_has_package(content: str, url: str) -> bool:
     return url in content
 
 
-def _find_unityframework_frameworks_phase(content: str) -> str | None:
+def _find_unityframework_frameworks_phase(content: str) -> Optional[str]:
     """
     Возвращает UUID секции PBXFrameworksBuildPhase, принадлежащей
     таргету UnityFramework, или None если не найдено.

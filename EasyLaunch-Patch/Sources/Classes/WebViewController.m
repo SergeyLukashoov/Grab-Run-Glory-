@@ -501,7 +501,7 @@
     self.webView.scrollView.zoomScale = 1.0;
 }
 
-#pragma mark - Rotation (fullscreen WebView: all orientations)
+#pragma mark - Rotation (до Unity: портрет по умолчанию, автоповорот)
 
 - (BOOL)shouldAutorotate
 {
@@ -510,7 +510,12 @@
 
 - (UIInterfaceOrientationMask)supportedInterfaceOrientations
 {
-    return UIInterfaceOrientationMaskAll;
+    return UIInterfaceOrientationMaskAllButUpsideDown;
+}
+
+- (UIInterfaceOrientation)preferredInterfaceOrientationForPresentation
+{
+    return UIInterfaceOrientationPortrait;
 }
 
 @end

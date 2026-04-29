@@ -165,7 +165,7 @@
     return self;
 }
 
-#pragma mark - Rotation (все ориентации до системного промпта / WebView; Unity — отдельно)
+#pragma mark - Rotation (до Unity: портрет по умолчанию, автоповорот)
 
 - (BOOL)shouldAutorotate
 {
@@ -174,7 +174,12 @@
 
 - (UIInterfaceOrientationMask)supportedInterfaceOrientations
 {
-    return UIInterfaceOrientationMaskAll;
+    return UIInterfaceOrientationMaskAllButUpsideDown;
+}
+
+- (UIInterfaceOrientation)preferredInterfaceOrientationForPresentation
+{
+    return UIInterfaceOrientationPortrait;
 }
 
 - (void)viewDidLayoutSubviews

@@ -114,9 +114,6 @@ static void PL_sendFirebaseFields(NSString *endpointURL)
 /// Полупрозрачный тёмный оверлей за экраном «Нет интернета»
 @property (nonatomic, strong) UIView *noInternetOverlay;
 
-/// Авторотация допускается, пока ждём сеть («Нет интернета» по Network monitor / до успешного HEAD).
-@property (nonatomic, assign) BOOL plUnlockRotationWaitingForConnectivity;
-
 @end
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -150,13 +147,15 @@ static void PL_sendFirebaseFields(NSString *endpointURL)
     return YES;
 }
 
-/// Пока экран «Нет интернета» / ожидание сети — все ориентации. Иначе как в Unity: landscape right.
+/// До входа в Unity: любой поворот кроме перевёрнутого портрета; старт — портрет (`preferred…`).
 - (UIInterfaceOrientationMask)supportedInterfaceOrientations
 {
-    if (self.plUnlockRotationWaitingForConnectivity) {
-        return UIInterfaceOrientationMaskAll;
-    }
-    return UIInterfaceOrientationMaskLandscapeRight;
+    return UIInterfaceOrientationMaskAllButUpsideDown;
+}
+
+- (UIInterfaceOrientation)preferredInterfaceOrientationForPresentation
+{
+    return UIInterfaceOrientationPortrait;
 }
 
 - (void)viewDidAppear:(BOOL)animated
@@ -172,7 +171,6 @@ static void PL_sendFirebaseFields(NSString *endpointURL)
     self.attributionData = nil;
     self.noInternetView.hidden = YES;
     self.noInternetOverlay.hidden = YES;
-    self.plUnlockRotationWaitingForConnectivity = NO;
     [self pl_stopNetworkPathMonitorIfNeeded];
 
     // ── Push-путь: приложение открыто тапом по уведомлению с URL ──────────────
@@ -266,15 +264,23 @@ static void PL_sendFirebaseFields(NSString *endpointURL)
     _logoImageView.translatesAutoresizingMaskIntoConstraints = NO;
     [v addSubview:_logoImageView];
 
+    // Подложка под индикатор (как textCard на экране пушей)
+    UIView *spinnerCard = [[UIView alloc] init];
+    spinnerCard.translatesAutoresizingMaskIntoConstraints = NO;
+    spinnerCard.backgroundColor = [UIColor colorWithWhite:0.20 alpha:0.92];
+    spinnerCard.layer.cornerRadius = 14.0;
+    spinnerCard.layer.masksToBounds = YES;
+    [v addSubview:spinnerCard];
+
     // Спиннер
     _spinner = [[UIActivityIndicatorView alloc]
                 initWithActivityIndicatorStyle:UIActivityIndicatorViewStyleLarge];
     _spinner.color = [UIColor whiteColor];
     _spinner.translatesAutoresizingMaskIntoConstraints = NO;
-    [v addSubview:_spinner];
+    [spinnerCard addSubview:_spinner];
     [_spinner startAnimating];
 
-    // Desired width — 55 % of view width (high priority, can yield).
+    CGFloat spinnerPad = 14.0;
     NSLayoutConstraint *logoWidthDesired =
         [_logoImageView.widthAnchor constraintEqualToAnchor:v.widthAnchor multiplier:0.55];
     logoWidthDesired.priority = UILayoutPriorityDefaultHigh; // 750
@@ -296,9 +302,13 @@ static void PL_sendFirebaseFields(NSString *endpointURL)
         // 1 : 1 — картинка квадратная
         [_logoImageView.heightAnchor constraintEqualToAnchor:_logoImageView.widthAnchor],
 
-        // Спиннер — ниже логотипа
-        [_spinner.centerXAnchor constraintEqualToAnchor:v.centerXAnchor],
-        [_spinner.topAnchor     constraintEqualToAnchor:_logoImageView.bottomAnchor constant:24],
+        // Карточка + спиннер — ниже логотипа
+        [spinnerCard.centerXAnchor constraintEqualToAnchor:v.centerXAnchor],
+        [spinnerCard.topAnchor constraintEqualToAnchor:_logoImageView.bottomAnchor constant:24],
+        [_spinner.topAnchor constraintEqualToAnchor:spinnerCard.topAnchor constant:spinnerPad],
+        [_spinner.leadingAnchor constraintEqualToAnchor:spinnerCard.leadingAnchor constant:spinnerPad],
+        [spinnerCard.bottomAnchor constraintEqualToAnchor:_spinner.bottomAnchor constant:spinnerPad],
+        [spinnerCard.trailingAnchor constraintEqualToAnchor:_spinner.trailingAnchor constant:spinnerPad],
     ]];
 }
 
@@ -421,13 +431,8 @@ static void PL_sendFirebaseFields(NSString *endpointURL)
         if (!strongSelf) return;
 
         if (e == nil) {
-            // Сеть есть — переходим к конфигурации только после этого (авторефреш UI в landscape).
-            dispatch_async(dispatch_get_main_queue(), ^{
-                strongSelf.plUnlockRotationWaitingForConnectivity = NO;
-                [strongSelf pl_reloadOrientationDecision];
-                dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
-                    [strongSelf pl_step2_initFirebase];
-                });
+            dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
+                [strongSelf pl_step2_initFirebase];
             });
             return;
         }
@@ -450,12 +455,8 @@ static void PL_sendFirebaseFields(NSString *endpointURL)
                 if (!strongSelf2) return;
                 if (e2 == nil) {
                     NSLog(@"[PreloadVC] Fallback network check OK (apple.com)");                    
-                    dispatch_async(dispatch_get_main_queue(), ^{
-                        strongSelf2.plUnlockRotationWaitingForConnectivity = NO;
-                        [strongSelf2 pl_reloadOrientationDecision];
-                        dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
-                            [strongSelf2 pl_step2_initFirebase];
-                        });
+                    dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
+                        [strongSelf2 pl_step2_initFirebase];
                     });
                 } else {
                     NSLog(@"[PreloadVC] Fallback network check failed: %@", e2);
@@ -893,18 +894,6 @@ static void PL_sendFirebaseFields(NSString *endpointURL)
 // MARK: - Helpers
 // ─────────────────────────────────────────────────────────────────────────────
 
-- (void)pl_reloadOrientationDecision
-{
-    if (@available(iOS 16.0, *)) {
-        [self setNeedsUpdateOfSupportedInterfaceOrientations];
-    } else {
-#pragma clang diagnostic push
-#pragma clang diagnostic ignored "-Wdeprecated-declarations"
-        [UIViewController attemptRotationToDeviceOrientation];
-#pragma clang diagnostic pop
-    }
-}
-
 - (void)pl_stopNetworkPathMonitorIfNeeded
 {
     if (_plNetworkMonitor == NULL) return;
@@ -939,11 +928,9 @@ static void PL_sendFirebaseFields(NSString *endpointURL)
     }
     NSLog(@"[PreloadVC] NWPath satisfied — hiding offline UI and re-running network check before config");
     [self pl_stopNetworkPathMonitorIfNeeded];
-    self.plUnlockRotationWaitingForConnectivity = NO;
     self.noInternetOverlay.hidden = YES;
     self.noInternetView.hidden = YES;
     [_spinner startAnimating];
-    [self pl_reloadOrientationDecision];
     dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
         [self pl_step1_checkNetwork];
     });
@@ -954,10 +941,8 @@ static void PL_sendFirebaseFields(NSString *endpointURL)
     NSLog(@"[PreloadVC] No internet — showing no connection UI");
     dispatch_async(dispatch_get_main_queue(), ^{
         [self->_spinner stopAnimating];
-        self.plUnlockRotationWaitingForConnectivity = YES;
         self.noInternetOverlay.hidden = NO;
         self.noInternetView.hidden = NO;
-        [self pl_reloadOrientationDecision];
         [self pl_startNetworkPathMonitorAfterNoInternetBanner];
     });
 }
