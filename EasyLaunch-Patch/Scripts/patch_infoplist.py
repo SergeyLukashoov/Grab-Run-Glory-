@@ -1,7 +1,12 @@
 #!/usr/bin/env python3
 """
-patch_infoplist.py — добавляет NSCameraUsageDescription и NSMicrophoneUsageDescription
-в Info.plist если они ещё не присутствуют.
+patch_infoplist.py — дополняет Info.plist:
+
+  • NSCameraUsageDescription и NSMicrophoneUsageDescription при отсутствии.
+  • ITSAppUsesNonExemptEncryption при отсутствии.
+  • UISupportedInterfaceOrientations (и ~ipad): объединяет с полным списком
+    интерфейсных ориентаций — нужно чтобы WebView мог поворачиваться во все
+    стороны (локф для Unity остаётся в коде).
 
 Использование:
     python3 patch_infoplist.py <path/to/Info.plist>
@@ -16,6 +21,38 @@ KEYS = {
     "NSMicrophoneUsageDescription": "This app requires access to the microphone.",
     "ITSAppUsesNonExemptEncryption": False,
 }
+
+# Максимум интерфейсов в Info.plist нужен, чтобы WebView мог крутиться во все стороны
+# (фактическая маска задаётся кодом; игра в Unity остаётся в landscape right).
+UI_ORIENTATION_KEYS = (
+    "UIInterfaceOrientationPortrait",
+    "UIInterfaceOrientationPortraitUpsideDown",
+    "UIInterfaceOrientationLandscapeLeft",
+    "UIInterfaceOrientationLandscapeRight",
+)
+
+
+def merge_supported_interface_orientations(data: dict) -> bool:
+    changed = False
+    for plist_key in (
+        "UISupportedInterfaceOrientations",
+        "UISupportedInterfaceOrientations~ipad",
+    ):
+        arr = data.get(plist_key)
+        if arr is None:
+            arr = []
+            data[plist_key] = arr
+            changed = True
+        if not isinstance(arr, list):
+            continue
+        existing = set(arr)
+        for o in UI_ORIENTATION_KEYS:
+            if o not in existing:
+                arr.append(o)
+                existing.add(o)
+                changed = True
+                print(f"[patch_infoplist]  + {plist_key}: {o}")
+    return changed
 
 
 def patch(plist_path: str) -> None:
@@ -34,6 +71,9 @@ def patch(plist_path: str) -> None:
             changed = True
         else:
             print(f"[patch_infoplist]  = {key} (уже присутствует, пропуск)")
+
+    if merge_supported_interface_orientations(data):
+        changed = True
 
     if changed:
         with open(plist_path, "wb") as f:

@@ -52,6 +52,12 @@ FRAMEWORKS_TO_LINK = [
         'sourceTree': 'SDKROOT',
         'fileType':   'wrapper.framework',
     },
+    {
+        'name':       'Network.framework',
+        'path':       'System/Library/Frameworks/Network.framework',
+        'sourceTree': 'SDKROOT',
+        'fileType':   'wrapper.framework',
+    },
 ]
 
 # ──────────────────────────────────────────────────────────────────────────────

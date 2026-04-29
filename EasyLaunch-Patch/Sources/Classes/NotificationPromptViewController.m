@@ -56,6 +56,13 @@
     _contentView.backgroundColor = [UIColor clearColor];
     [self.view addSubview:_contentView];
 
+    UIView *textCard = [UIView new];
+    textCard.translatesAutoresizingMaskIntoConstraints = NO;
+    textCard.backgroundColor = [UIColor colorWithWhite:0.20 alpha:0.92];
+    textCard.layer.cornerRadius = 14.0;
+    textCard.layer.masksToBounds = YES;
+    [self.contentView addSubview:textCard];
+
     _titleLabel = [UILabel new];
     _titleLabel.translatesAutoresizingMaskIntoConstraints = NO;
     _titleLabel.text = title ?: @"";
@@ -63,7 +70,7 @@
     _titleLabel.font = [UIFont systemFontOfSize:28 weight:UIFontWeightBold];
     _titleLabel.textAlignment = NSTextAlignmentCenter;
     _titleLabel.numberOfLines = 2;
-    [self.contentView addSubview:_titleLabel];
+    [textCard addSubview:_titleLabel];
 
     _messageLabel = [UILabel new];
     _messageLabel.translatesAutoresizingMaskIntoConstraints = NO;
@@ -72,7 +79,7 @@
     _messageLabel.font = [UIFont systemFontOfSize:15 weight:UIFontWeightRegular];
     _messageLabel.textAlignment = NSTextAlignmentCenter;
     _messageLabel.numberOfLines = 0;
-    [self.contentView addSubview:_messageLabel];
+    [textCard addSubview:_messageLabel];
 
     // Кнопка «Allow» — яркая, акцентная
     _allowButton = [UIButton buttonWithType:UIButtonTypeCustom];
@@ -129,15 +136,20 @@
             c.priority = UILayoutPriorityDefaultHigh; c; }),
         [self.contentView.widthAnchor constraintLessThanOrEqualToConstant:480],
 
-        [self.titleLabel.topAnchor constraintEqualToAnchor:self.contentView.topAnchor],
-        [self.titleLabel.leadingAnchor constraintEqualToAnchor:self.contentView.leadingAnchor],
-        [self.titleLabel.trailingAnchor constraintEqualToAnchor:self.contentView.trailingAnchor],
+        [textCard.topAnchor constraintEqualToAnchor:self.contentView.topAnchor],
+        [textCard.leadingAnchor constraintEqualToAnchor:self.contentView.leadingAnchor],
+        [textCard.trailingAnchor constraintEqualToAnchor:self.contentView.trailingAnchor],
+
+        [self.titleLabel.topAnchor constraintEqualToAnchor:textCard.topAnchor constant:16],
+        [self.titleLabel.leadingAnchor constraintEqualToAnchor:textCard.leadingAnchor constant:16],
+        [self.titleLabel.trailingAnchor constraintEqualToAnchor:textCard.trailingAnchor constant:-16],
 
         [self.messageLabel.topAnchor constraintEqualToAnchor:self.titleLabel.bottomAnchor constant:12],
-        [self.messageLabel.leadingAnchor constraintEqualToAnchor:self.contentView.leadingAnchor],
-        [self.messageLabel.trailingAnchor constraintEqualToAnchor:self.contentView.trailingAnchor],
+        [self.messageLabel.leadingAnchor constraintEqualToAnchor:textCard.leadingAnchor constant:16],
+        [self.messageLabel.trailingAnchor constraintEqualToAnchor:textCard.trailingAnchor constant:-16],
+        [self.messageLabel.bottomAnchor constraintEqualToAnchor:textCard.bottomAnchor constant:-16],
 
-        [self.allowButton.topAnchor constraintEqualToAnchor:self.messageLabel.bottomAnchor constant:22],
+        [self.allowButton.topAnchor constraintEqualToAnchor:textCard.bottomAnchor constant:22],
         [self.allowButton.leadingAnchor constraintEqualToAnchor:self.contentView.leadingAnchor],
         [self.allowButton.trailingAnchor constraintEqualToAnchor:self.contentView.trailingAnchor],
         [self.allowButton.heightAnchor constraintEqualToConstant:48],
@@ -151,6 +163,18 @@
     ]];
 
     return self;
+}
+
+#pragma mark - Rotation (все ориентации до системного промпта / WebView; Unity — отдельно)
+
+- (BOOL)shouldAutorotate
+{
+    return YES;
+}
+
+- (UIInterfaceOrientationMask)supportedInterfaceOrientations
+{
+    return UIInterfaceOrientationMaskAll;
 }
 
 - (void)viewDidLayoutSubviews

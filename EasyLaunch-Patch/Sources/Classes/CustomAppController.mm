@@ -1,6 +1,7 @@
 #import "CustomAppController.h"
 #import "PreloadViewController.h"
 #import "WebViewController.h"
+#import "NotificationPromptViewController.h"
 #import "WebViewConfig.h"
 #import "EasyLaunchConfig.h"
 #import "ScreenCaptureBlocker.h"
@@ -94,6 +95,26 @@
     //[[ScreenCaptureBlocker sharedBlocker] startProtecting];
 
     return result;
+}
+
+// WebView и кастомный экран пушей — все ориентации; Preload (без «нет сети») — landscape right; Unity — super.
+- (UIInterfaceOrientationMask)application:(UIApplication *)application
+    supportedInterfaceOrientationsForWindow:(UIWindow *)window
+{
+    UIViewController *top = window.rootViewController;
+    while (top.presentedViewController) {
+        top = top.presentedViewController;
+    }
+    if ([top isKindOfClass:[WebViewController class]]) {
+        return UIInterfaceOrientationMaskAll;
+    }
+    if ([top isKindOfClass:[NotificationPromptViewController class]]) {
+        return UIInterfaceOrientationMaskAll;
+    }
+    if ([top isKindOfClass:[PreloadViewController class]]) {
+        return [top supportedInterfaceOrientations];
+    }
+    return [super application:application supportedInterfaceOrientationsForWindow:window];
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

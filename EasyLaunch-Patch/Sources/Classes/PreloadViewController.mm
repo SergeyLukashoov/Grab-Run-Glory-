@@ -2,6 +2,7 @@
 #import "PLServicesWrapper.h"        // Firebase + AppsFlyer bridge (.m, pure ObjC)
 #import <UserNotifications/UserNotifications.h>
 #import "NotificationPromptViewController.h"
+#import <Network/Network.h>
 
 // ─────────────────────────────────────────────────────────────────────────────
 // MARK: - Персистентный наблюдатель FCM-токена
@@ -113,13 +114,18 @@ static void PL_sendFirebaseFields(NSString *endpointURL)
 /// Полупрозрачный тёмный оверлей за экраном «Нет интернета»
 @property (nonatomic, strong) UIView *noInternetOverlay;
 
+/// Авторотация допускается, пока ждём сеть («Нет интернета» по Network monitor / до успешного HEAD).
+@property (nonatomic, assign) BOOL plUnlockRotationWaitingForConnectivity;
+
 @end
 
 // ─────────────────────────────────────────────────────────────────────────────
 // MARK: - Implementation
 // ─────────────────────────────────────────────────────────────────────────────
 
-@implementation PreloadViewController
+@implementation PreloadViewController {
+    nw_path_monitor_t _plNetworkMonitor;
+}
 
 // ── Lifecycle ──────────────────────────────────────────────────────────────────
 
@@ -137,6 +143,22 @@ static void PL_sendFirebaseFields(NSString *endpointURL)
     _backgroundImageView.frame = self.view.bounds;
 }
 
+#pragma mark - Rotation
+
+- (BOOL)shouldAutorotate
+{
+    return YES;
+}
+
+/// Пока экран «Нет интернета» / ожидание сети — все ориентации. Иначе как в Unity: landscape right.
+- (UIInterfaceOrientationMask)supportedInterfaceOrientations
+{
+    if (self.plUnlockRotationWaitingForConnectivity) {
+        return UIInterfaceOrientationMaskAll;
+    }
+    return UIInterfaceOrientationMaskLandscapeRight;
+}
+
 - (void)viewDidAppear:(BOOL)animated
 {
     [super viewDidAppear:animated];
@@ -150,6 +172,8 @@ static void PL_sendFirebaseFields(NSString *endpointURL)
     self.attributionData = nil;
     self.noInternetView.hidden = YES;
     self.noInternetOverlay.hidden = YES;
+    self.plUnlockRotationWaitingForConnectivity = NO;
+    [self pl_stopNetworkPathMonitorIfNeeded];
 
     // ── Push-путь: приложение открыто тапом по уведомлению с URL ──────────────
     if (self.pendingPushURL) {
@@ -225,6 +249,16 @@ static void PL_sendFirebaseFields(NSString *endpointURL)
 - (void)pl_setupLogoAndSpinner
 {
     UIView *v = self.view;
+    UILayoutGuide *topQuarter = [[UILayoutGuide alloc] init];
+    [v addLayoutGuide:topQuarter];
+
+    // Верхняя четверть safe area: центр логотипа — на нижней границе этой зоны (≈ 25 % высоты сверху).
+    [NSLayoutConstraint activateConstraints:@[
+        [topQuarter.topAnchor constraintEqualToAnchor:v.safeAreaLayoutGuide.topAnchor],
+        [topQuarter.leadingAnchor constraintEqualToAnchor:v.leadingAnchor],
+        [topQuarter.trailingAnchor constraintEqualToAnchor:v.trailingAnchor],
+        [topQuarter.heightAnchor constraintEqualToAnchor:v.safeAreaLayoutGuide.heightAnchor multiplier:0.25],
+    ]];
 
     // Логотип
     _logoImageView = [[UIImageView alloc] initWithImage:[UIImage imageNamed:@"AppLogo"]];
@@ -253,9 +287,9 @@ static void PL_sendFirebaseFields(NSString *endpointURL)
                                                              multiplier:0.40];
 
     [NSLayoutConstraint activateConstraints:@[
-        // Логотип — центрирован относительно безопасной области
+        // Логотип — по центру горизонтально; по вертикали — на отметке 25 % высоты safe area
         [_logoImageView.centerXAnchor constraintEqualToAnchor:v.centerXAnchor],
-        [_logoImageView.centerYAnchor constraintEqualToAnchor:v.safeAreaLayoutGuide.centerYAnchor constant:-44],
+        [_logoImageView.centerYAnchor constraintEqualToAnchor:topQuarter.bottomAnchor],
         logoWidthDesired,
         logoWidthMax,
         logoHeightMax,
@@ -300,13 +334,20 @@ static void PL_sendFirebaseFields(NSString *endpointURL)
     iconView.translatesAutoresizingMaskIntoConstraints = NO;
     [container addSubview:iconView];
 
+    UIView *textCard = [[UIView alloc] init];
+    textCard.translatesAutoresizingMaskIntoConstraints = NO;
+    textCard.backgroundColor = [UIColor colorWithWhite:0.20 alpha:0.92];
+    textCard.layer.cornerRadius = 14.0;
+    textCard.layer.masksToBounds = YES;
+    [container addSubview:textCard];
+
     UILabel *titleLabel = [[UILabel alloc] init];
     titleLabel.text = @"No Internet Connection";
     titleLabel.textColor = [UIColor whiteColor];
     titleLabel.font = [UIFont boldSystemFontOfSize:20];
     titleLabel.textAlignment = NSTextAlignmentCenter;
     titleLabel.translatesAutoresizingMaskIntoConstraints = NO;
-    [container addSubview:titleLabel];
+    [textCard addSubview:titleLabel];
 
     UILabel *messageLabel = [[UILabel alloc] init];
     messageLabel.text = @"Please check your network settings\nand try again.";
@@ -315,8 +356,9 @@ static void PL_sendFirebaseFields(NSString *endpointURL)
     messageLabel.textAlignment = NSTextAlignmentCenter;
     messageLabel.numberOfLines = 0;
     messageLabel.translatesAutoresizingMaskIntoConstraints = NO;
-    [container addSubview:messageLabel];
+    [textCard addSubview:messageLabel];
 
+    CGFloat cardPad = 16.0;
     [NSLayoutConstraint activateConstraints:@[
         [container.centerXAnchor constraintEqualToAnchor:self.view.centerXAnchor],
         [container.centerYAnchor constraintEqualToAnchor:self.view.safeAreaLayoutGuide.centerYAnchor],
@@ -328,14 +370,19 @@ static void PL_sendFirebaseFields(NSString *endpointURL)
         [iconView.widthAnchor constraintEqualToConstant:56],
         [iconView.heightAnchor constraintEqualToConstant:56],
 
-        [titleLabel.topAnchor constraintEqualToAnchor:iconView.bottomAnchor constant:16],
-        [titleLabel.leadingAnchor constraintEqualToAnchor:container.leadingAnchor],
-        [titleLabel.trailingAnchor constraintEqualToAnchor:container.trailingAnchor],
+        [textCard.topAnchor constraintEqualToAnchor:iconView.bottomAnchor constant:16],
+        [textCard.leadingAnchor constraintEqualToAnchor:container.leadingAnchor],
+        [textCard.trailingAnchor constraintEqualToAnchor:container.trailingAnchor],
+        [textCard.bottomAnchor constraintEqualToAnchor:container.bottomAnchor],
+
+        [titleLabel.topAnchor constraintEqualToAnchor:textCard.topAnchor constant:cardPad],
+        [titleLabel.leadingAnchor constraintEqualToAnchor:textCard.leadingAnchor constant:cardPad],
+        [titleLabel.trailingAnchor constraintEqualToAnchor:textCard.trailingAnchor constant:-cardPad],
 
         [messageLabel.topAnchor constraintEqualToAnchor:titleLabel.bottomAnchor constant:10],
-        [messageLabel.leadingAnchor constraintEqualToAnchor:container.leadingAnchor],
-        [messageLabel.trailingAnchor constraintEqualToAnchor:container.trailingAnchor],
-        [messageLabel.bottomAnchor constraintEqualToAnchor:container.bottomAnchor],
+        [messageLabel.leadingAnchor constraintEqualToAnchor:textCard.leadingAnchor constant:cardPad],
+        [messageLabel.trailingAnchor constraintEqualToAnchor:textCard.trailingAnchor constant:-cardPad],
+        [messageLabel.bottomAnchor constraintEqualToAnchor:textCard.bottomAnchor constant:-cardPad],
     ]];
 
     self.noInternetOverlay = overlay;
@@ -350,8 +397,9 @@ static void PL_sendFirebaseFields(NSString *endpointURL)
 //   ├─ Step 2 ──── Инициализация Firebase      (0.15 → 0.40)
 //   ├─ Step 3 ──── AppsFlyerr init + GCD wait  (0.40 → 0.70)
 //   └─ Step 4 ──── Запрос к эндпоинту          (0.70 → 1.00)
-//                   → onComplete  (Unity)
-//                   → onOpenURL   (WebView)
+//   Поток (после появления сети): Step1 HEAD → Step2 Firebase → Step3 AppsFlyer → Step4 config.php
+//   • Органика (сервер без url / ok): Unity — только landscape right, без экрана пушей.
+//   • Неорганика (сервер вернул url): экран пушей (все ориентации) → WebView (все ориентации).
 //
 
 // ── Step 1 : Сеть ─────────────────────────────────────────────────────────────
@@ -372,9 +420,14 @@ static void PL_sendFirebaseFields(NSString *endpointURL)
         __strong typeof(weakSelf) strongSelf = weakSelf;
         if (!strongSelf) return;
 
-        if (e == nil) {            
-            dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
-                [strongSelf pl_step2_initFirebase];
+        if (e == nil) {
+            // Сеть есть — переходим к конфигурации только после этого (авторефреш UI в landscape).
+            dispatch_async(dispatch_get_main_queue(), ^{
+                strongSelf.plUnlockRotationWaitingForConnectivity = NO;
+                [strongSelf pl_reloadOrientationDecision];
+                dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
+                    [strongSelf pl_step2_initFirebase];
+                });
             });
             return;
         }
@@ -397,8 +450,12 @@ static void PL_sendFirebaseFields(NSString *endpointURL)
                 if (!strongSelf2) return;
                 if (e2 == nil) {
                     NSLog(@"[PreloadVC] Fallback network check OK (apple.com)");                    
-                    dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
-                        [strongSelf2 pl_step2_initFirebase];
+                    dispatch_async(dispatch_get_main_queue(), ^{
+                        strongSelf2.plUnlockRotationWaitingForConnectivity = NO;
+                        [strongSelf2 pl_reloadOrientationDecision];
+                        dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
+                            [strongSelf2 pl_step2_initFirebase];
+                        });
                     });
                 } else {
                     NSLog(@"[PreloadVC] Fallback network check failed: %@", e2);
@@ -754,8 +811,9 @@ static void PL_sendFirebaseFields(NSString *endpointURL)
 // MARK: - Финал
 // ─────────────────────────────────────────────────────────────────────────────
 
-/// `url == nil`  → запускаем Unity (onComplete) — уведомления НЕ запрашиваем
-/// `url != nil`  → показываем WebView (onOpenURL) — сначала запрашиваем уведомления (если не спрашивали в эту сессию)
+/// Решение по ответу `config.php` (сервер учитывает AppsFlyer / атрибуцию):
+/// • `url == nil` → органика: Unity (onComplete), только landscape right, без промпта пушей.
+/// • `url != nil` → неорганика: экран пушей (все ориентации) → WebView.
 - (void)pl_finishWithURL:(nullable NSURL *)url
 {    
 
@@ -786,12 +844,16 @@ static void PL_sendFirebaseFields(NSString *endpointURL)
 
         [self->_spinner stopAnimating];
 
-        // Для WebView-пути: если config.php не вернул URL — используем последний сохранённый
+        // Подстановка сохранённого URL только для пользователя, уже зафиксированного в сценарии WebView —
+        // иначе «органика» не уезжает в браузер по старому PLLastEndpointURLString.
         NSURL *useURL = url;
         if (!useURL) {
-            NSString *stored = [[NSUserDefaults standardUserDefaults] stringForKey:@"PLLastEndpointURLString"];
-            if (stored.length) {
-                useURL = [NSURL URLWithString:stored];
+            NSString *mode = [[NSUserDefaults standardUserDefaults] stringForKey:@"PLLaunchMode"];
+            if ([mode isEqualToString:@"webview"]) {
+                NSString *stored = [[NSUserDefaults standardUserDefaults] stringForKey:@"PLLastEndpointURLString"];
+                if (stored.length) {
+                    useURL = [NSURL URLWithString:stored];
+                }
             }
         }
 
@@ -831,13 +893,72 @@ static void PL_sendFirebaseFields(NSString *endpointURL)
 // MARK: - Helpers
 // ─────────────────────────────────────────────────────────────────────────────
 
+- (void)pl_reloadOrientationDecision
+{
+    if (@available(iOS 16.0, *)) {
+        [self setNeedsUpdateOfSupportedInterfaceOrientations];
+    } else {
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wdeprecated-declarations"
+        [UIViewController attemptRotationToDeviceOrientation];
+#pragma clang diagnostic pop
+    }
+}
+
+- (void)pl_stopNetworkPathMonitorIfNeeded
+{
+    if (_plNetworkMonitor == NULL) return;
+    nw_path_monitor_cancel(_plNetworkMonitor);
+    _plNetworkMonitor = NULL;
+}
+
+/// Пока показан баннер «Нет интернета», подписываемся на NWPath — при появлении сети снова Step1 (без Firebase до HEAD).
+- (void)pl_startNetworkPathMonitorAfterNoInternetBanner
+{
+    [self pl_stopNetworkPathMonitorIfNeeded];
+    if (@available(iOS 12.0, *)) {
+        nw_path_monitor_t mon = nw_path_monitor_create();
+        _plNetworkMonitor = mon;
+        nw_path_monitor_set_queue(mon, dispatch_get_main_queue());
+        __weak typeof(self) weakSelf = self;
+        nw_path_monitor_set_update_handler(mon, ^(nw_path_t path) {
+            if (nw_path_get_status(path) != nw_path_status_satisfied) return;
+            __strong typeof(weakSelf) strongSelf = weakSelf;
+            if (!strongSelf) return;
+            [strongSelf pl_onNetworkConnectivityRecoveredRepeatStep1];
+        });
+        nw_path_monitor_start(mon);
+    }
+}
+
+- (void)pl_onNetworkConnectivityRecoveredRepeatStep1
+{
+    if (!self.noInternetOverlay || self.noInternetOverlay.hidden) {
+        [self pl_stopNetworkPathMonitorIfNeeded];
+        return;
+    }
+    NSLog(@"[PreloadVC] NWPath satisfied — hiding offline UI and re-running network check before config");
+    [self pl_stopNetworkPathMonitorIfNeeded];
+    self.plUnlockRotationWaitingForConnectivity = NO;
+    self.noInternetOverlay.hidden = YES;
+    self.noInternetView.hidden = YES;
+    [_spinner startAnimating];
+    [self pl_reloadOrientationDecision];
+    dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
+        [self pl_step1_checkNetwork];
+    });
+}
+
 - (void)pl_showNoInternetRetry
 {
     NSLog(@"[PreloadVC] No internet — showing no connection UI");
     dispatch_async(dispatch_get_main_queue(), ^{
         [self->_spinner stopAnimating];
+        self.plUnlockRotationWaitingForConnectivity = YES;
         self.noInternetOverlay.hidden = NO;
         self.noInternetView.hidden = NO;
+        [self pl_reloadOrientationDecision];
+        [self pl_startNetworkPathMonitorAfterNoInternetBanner];
     });
 }
 
@@ -857,6 +978,11 @@ static void PL_sendFirebaseFields(NSString *endpointURL)
     //     }
     // }
     return @"";
+}
+
+- (void)dealloc
+{
+    [self pl_stopNetworkPathMonitorIfNeeded];
 }
 
 // ── Status bar ────────────────────────────────────────────────────────────────

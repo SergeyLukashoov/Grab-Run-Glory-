@@ -500,4 +500,17 @@
     // Reset zoom scale when keyboard is hidden
     self.webView.scrollView.zoomScale = 1.0;
 }
+
+#pragma mark - Rotation (fullscreen WebView: all orientations)
+
+- (BOOL)shouldAutorotate
+{
+    return YES;
+}
+
+- (UIInterfaceOrientationMask)supportedInterfaceOrientations
+{
+    return UIInterfaceOrientationMaskAll;
+}
+
 @end
