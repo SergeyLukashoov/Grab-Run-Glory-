@@ -1,17 +1,10 @@
 #import "CustomAppController.h"
 #import "PreloadViewController.h"
 #import "WebViewController.h"
-#import "NotificationPromptViewController.h"
 #import "WebViewConfig.h"
 #import "EasyLaunchConfig.h"
 #import "ScreenCaptureBlocker.h"
 #import <UserNotifications/UserNotifications.h>
-
-/// Совпадает с целевой ориентацией игры: только альбомные (Landscape Left и Right).
-static inline UIInterfaceOrientationMask PL_UnityGameplayOrientationMask(void)
-{
-    return UIInterfaceOrientationMaskLandscape;
-}
 
 // ─────────────────────────────────────────────────────────────────────────────
 // MARK: - Private interface
@@ -101,22 +94,6 @@ static inline UIInterfaceOrientationMask PL_UnityGameplayOrientationMask(void)
     //[[ScreenCaptureBlocker sharedBlocker] startProtecting];
 
     return result;
-}
-
-// EasyLaunch экраны — их маска; режим игры Unity — только альбом без портрета (не смешиваем с [super] и Player Settings порта).
-- (UIInterfaceOrientationMask)application:(UIApplication *)application
-    supportedInterfaceOrientationsForWindow:(UIWindow *)window
-{
-    UIViewController *top = window.rootViewController;
-    while (top.presentedViewController) {
-        top = top.presentedViewController;
-    }
-    if ([top isKindOfClass:[PreloadViewController class]] ||
-        [top isKindOfClass:[WebViewController class]] ||
-        [top isKindOfClass:[NotificationPromptViewController class]]) {
-        return [top supportedInterfaceOrientations];
-    }
-    return PL_UnityGameplayOrientationMask();
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -351,12 +328,6 @@ static inline UIInterfaceOrientationMask PL_UnityGameplayOrientationMask(void)
 
             // Теперь инициализируем Unity
             [super initUnityWithScene:self.pendingScene];
-            // После preload устройство может остаться в портрете — явно запрашиваем альбомную геометрию окна iOS.
-            [self pl_requestForegroundSceneLandscapeGeometry];
-            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.25 * NSEC_PER_SEC)),
-                           dispatch_get_main_queue(), ^{
-                [self pl_requestForegroundSceneLandscapeGeometry];
-            });
         }];
     });
 }
@@ -367,26 +338,6 @@ static inline UIInterfaceOrientationMask PL_UnityGameplayOrientationMask(void)
 {
     UNUserNotificationCenter.currentNotificationCenter.delegate = self;
     [super applicationDidBecomeActive:application];
-}
-
-/// iOS 16+: запросить активной scene только альбом (после Preload/WebView устройство часто вертикально).
-- (void)pl_requestForegroundSceneLandscapeGeometry
-{
-    if (@available(iOS 16.0, *)) {
-        for (UIScene *sceneObject in UIApplication.sharedApplication.connectedScenes) {
-            if (sceneObject.activationState != UISceneActivationStateForegroundActive) continue;
-            if (![sceneObject isKindOfClass:[UIWindowScene class]]) continue;
-            UIWindowScene *windowScene = (UIWindowScene *)sceneObject;
-            UIWindowSceneGeometryPreferencesIOS *prefs =
-                [[UIWindowSceneGeometryPreferencesIOS alloc]
-                    initWithInterfaceOrientations:PL_UnityGameplayOrientationMask()];
-            [windowScene requestGeometryUpdateWithPreferences:prefs
-                                                errorHandler:^(NSError *error) {
-                NSLog(@"[CustomAppController] requestGeometryUpdate landscape failed: %@", error);
-            }];
-            return;
-        }
-    }
 }
 
 @end

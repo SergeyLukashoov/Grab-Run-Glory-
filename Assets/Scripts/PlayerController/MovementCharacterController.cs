@@ -159,6 +159,13 @@ namespace PlatformCharacterController
 
         private void Awake()
         {
+#if UNITY_IOS || UNITY_ANDROID
+            Screen.autorotateToPortrait = false;
+            Screen.autorotateToPortraitUpsideDown = false;
+            Screen.autorotateToLandscapeLeft = true;
+            Screen.autorotateToLandscapeRight = true;
+            Screen.orientation = ScreenOrientation.AutoRotation;
+#endif
             if (_planeButton == null)
             {
                 return;

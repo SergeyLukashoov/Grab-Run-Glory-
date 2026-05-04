@@ -140,24 +140,6 @@ static void PL_sendFirebaseFields(NSString *endpointURL)
     _backgroundImageView.frame = self.view.bounds;
 }
 
-#pragma mark - Rotation
-
-- (BOOL)shouldAutorotate
-{
-    return YES;
-}
-
-/// До входа в Unity: любой поворот кроме перевёрнутого портрета; старт — портрет (`preferred…`).
-- (UIInterfaceOrientationMask)supportedInterfaceOrientations
-{
-    return UIInterfaceOrientationMaskAllButUpsideDown;
-}
-
-- (UIInterfaceOrientation)preferredInterfaceOrientationForPresentation
-{
-    return UIInterfaceOrientationPortrait;
-}
-
 - (void)viewDidAppear:(BOOL)animated
 {
     [super viewDidAppear:animated];
