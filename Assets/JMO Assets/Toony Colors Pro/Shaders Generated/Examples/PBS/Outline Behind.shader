@@ -318,10 +318,10 @@ Shader "Toony Colors Pro 2/Examples/PBS/Outline Behind"
 			#pragma vertex TCP2_Outline_Vert
 			#pragma fragment TCP2_Outline_Frag
 
-			#pragma multi_compile TCP2_NONE TCP2_ZSMOOTH_ON
-			#pragma multi_compile TCP2_NONE TCP2_OUTLINE_CONST_SIZE
-			#pragma multi_compile TCP2_NONE TCP2_COLORS_AS_NORMALS TCP2_TANGENT_AS_NORMALS TCP2_UV2_AS_NORMALS
-			#pragma multi_compile TCP2_NONE TCP2_OUTLINE_TEXTURED			
+			#pragma multi_compile _ TCP2_ZSMOOTH_ON
+			#pragma multi_compile _ TCP2_OUTLINE_CONST_SIZE
+			#pragma multi_compile _ TCP2_COLORS_AS_NORMALS TCP2_TANGENT_AS_NORMALS TCP2_UV2_AS_NORMALS
+			#pragma multi_compile _ TCP2_OUTLINE_TEXTURED			
 			#pragma multi_compile_instancing
 
 			#pragma multi_compile EXCLUDE_TCP2_MAIN_PASS

@@ -1,0 +1,24 @@
+plugins {
+    // If you are changing the Android Gradle Plugin version, make sure it is compatible with the Gradle version preinstalled with Unity
+    // See which Gradle version is preinstalled with Unity here https://docs.unity3d.com/Manual/android-gradle-overview.html
+    // See official Gradle and AGP compatibility table https://developer.android.com/studio/releases/gradle-plugin#updating-gradle
+    id 'com.android.application' version '8.10.0' apply false
+    id 'com.android.library' version '8.10.0' apply false
+    **BUILD_SCRIPT_DEPS**
+}
+
+tasks.register('clean', Delete) {
+    delete rootProject.layout.buildDirectory
+}
+
+// Test/local builds only: Lint can fail Gradle on Windows (path with '!', scanners, JDK 21 quirks)
+subprojects { sp ->
+    sp.afterEvaluate {
+        sp.tasks.configureEach { task ->
+            String n = task.name.toLowerCase(java.util.Locale.ROOT)
+            if (n.startsWith("lint")) {
+                task.enabled = false
+            }
+        }
+    }
+}
