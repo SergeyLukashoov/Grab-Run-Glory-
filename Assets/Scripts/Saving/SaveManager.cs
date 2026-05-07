@@ -2,7 +2,7 @@ using System.IO;
 using System.Collections.Generic;
 using UnityEngine;
 using System.Linq;
-using Newtonsoft.Json;
+//using Newtonsoft.Json;
 
 public class SaveManager : MonoBehaviour
 {

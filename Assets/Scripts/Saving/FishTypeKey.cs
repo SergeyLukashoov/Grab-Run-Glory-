@@ -1,18 +1,18 @@
 using System;
-using Newtonsoft.Json;
+//using Newtonsoft.Json;
 using UnityEngine;
 
 [Serializable]
 public struct FishTypeKey
 {
-    [JsonProperty("FishName")]
+    //[JsonProperty("FishName")]
     public readonly string FishName;
-    [JsonProperty("MagicKey")]
+    //[JsonProperty("MagicKey")]
     public readonly string MagicKey;
-    [JsonProperty("Verify")]
+    //[JsonProperty("Verify")]
     public readonly string Verify;
 
-    [JsonIgnore]
+    //[JsonIgnore]
     private FishDefinition _expanded;
 
     public FishTypeKey(FishDefinition fish)
